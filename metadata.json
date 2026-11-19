@@ -1,0 +1,6 @@
+{
+  "name": "Meridian Advisory Ops — Lead Triage & Quotation Engine",
+  "description": "Corporate Advisory & Finance Operations platform for AI-augmented lead triage, 4-day working-day SLA monitoring, Malaysian corporate fee quotation generation, finance approval gating, and proposal dispatch.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
