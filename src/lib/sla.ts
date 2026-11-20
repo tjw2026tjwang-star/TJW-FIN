@@ -138,3 +138,40 @@ export function generateQuoteNumber(existingCount: number): string {
   const seq = String(existingCount + 1).padStart(4, '0');
   return `TJW-QT-${year}-${seq}`;
 }
+
+export const DEFAULT_VALIDITY_DAYS = 30;
+
+export function toYmd(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+export function computeValidUntilDate(baseIso: string, validityDays: number): string {
+  const base = new Date(baseIso);
+  const safeBase = Number.isNaN(base.getTime()) ? new Date() : base;
+  const days = Math.max(1, Math.floor(Number(validityDays) || DEFAULT_VALIDITY_DAYS));
+  const target = new Date(safeBase.getFullYear(), safeBase.getMonth(), safeBase.getDate() + days);
+  return toYmd(target);
+}
+
+export function computeValidityDaysFromDates(baseIso: string, validUntilYmd: string): number {
+  const base = new Date(baseIso);
+  const safeBase = Number.isNaN(base.getTime()) ? new Date() : base;
+  const baseStart = new Date(safeBase.getFullYear(), safeBase.getMonth(), safeBase.getDate());
+  const parts = validUntilYmd.split('-').map(Number);
+  if (parts.length !== 3 || parts.some((n) => Number.isNaN(n))) {
+    return DEFAULT_VALIDITY_DAYS;
+  }
+  const target = new Date(parts[0], parts[1] - 1, parts[2]);
+  const diffMs = target.getTime() - baseStart.getTime();
+  return Math.max(1, Math.round(diffMs / 86400000));
+}
+
+export function formatValiditySummary(validityDays: number, validUntil: string): string {
+  const days = Math.max(1, Math.floor(Number(validityDays) || DEFAULT_VALIDITY_DAYS));
+  const dateLabel = validUntil || computeValidUntilDate(new Date().toISOString(), days);
+  return `${days} days (Valid until ${dateLabel})`;
+}
+

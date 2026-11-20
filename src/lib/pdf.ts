@@ -1,6 +1,12 @@
 import { jsPDF } from 'jspdf';
 import type { Lead, Quotation } from '../types';
-import { formatDateShort, formatDateTime, formatMyr } from './sla';
+import {
+  computeValidUntilDate,
+  DEFAULT_VALIDITY_DAYS,
+  formatDateShort,
+  formatDateTime,
+  formatMyr,
+} from './sla';
 
 export function downloadQuotationPdf(quotation: Quotation, lead: Lead | undefined) {
   const doc = new jsPDF({ unit: 'pt', format: 'a4' });
@@ -8,6 +14,10 @@ export function downloadQuotationPdf(quotation: Quotation, lead: Lead | undefine
   const margin = 44;
   const contentWidth = pageWidth - margin * 2;
   let y = 48;
+
+  const validityDays = quotation.validityDays || DEFAULT_VALIDITY_DAYS;
+  const validUntil =
+    quotation.validUntil || computeValidUntilDate(quotation.createdAt, validityDays);
 
   // Header band in Deep Crimson (#CB3737)
   doc.setFillColor(203, 55, 55);
@@ -19,10 +29,10 @@ export function downloadQuotationPdf(quotation: Quotation, lead: Lead | undefine
   doc.text('T.J. WANG FINANCE DEPARTMENT', margin, 37);
 
   doc.setFont('helvetica', 'normal');
-  doc.setFontSize(9.5);
+  doc.setFontSize(9);
   doc.setTextColor(255, 235, 235);
   doc.text(
-    'Company Secretarial  |  Accounting & SST  |  Statutory Audit  |  Tax Advisory  |  Payroll',
+    'Co Sec  |  Accounting & SST  |  Statutory Audit  |  Tax  |  Payroll  |  Finance Advisory (FP&A)',
     margin,
     55
   );
@@ -69,7 +79,11 @@ export function downloadQuotationPdf(quotation: Quotation, lead: Lead | undefine
     margin,
     y
   );
-  doc.text('Validity: 30 Calendar Days', pageWidth - margin - 185, y);
+  doc.text(
+    `Validity: ${validityDays} Days (Until ${validUntil})`,
+    pageWidth - margin - 185,
+    y
+  );
 
   if (lead?.entityType) {
     y += 14;
@@ -247,6 +261,10 @@ export function buildWhatsAppProposal(quotation: Quotation, lead: Lead | undefin
     )
     .join('\n');
 
+  const validityDays = quotation.validityDays || DEFAULT_VALIDITY_DAYS;
+  const validUntil =
+    quotation.validUntil || computeValidUntilDate(quotation.createdAt, validityDays);
+
   const message = [
     `Dear ${lead?.contactPerson || 'Director'},`,
     '',
@@ -260,7 +278,7 @@ export function buildWhatsAppProposal(quotation: Quotation, lead: Lead | undefin
     `- Annual Recurring Total: ${formatMyr(quotation.totalAnnualRecurringMyr)} / year`,
     `- Estimated Year-1 Total: ${formatMyr(quotation.totalYearOneMyr)}`,
     '',
-    `This quotation is valid for 30 calendar days. Please let us know if you would like us to issue the formal Letter of Engagement.`,
+    `This quotation is valid for ${validityDays} calendar days (valid until ${validUntil}). Please let us know if you would like us to issue the formal Letter of Engagement.`,
     '',
     `Warm regards,`,
     `T.J. Wang Finance Department`,

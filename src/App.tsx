@@ -33,9 +33,12 @@ import {
   saveSession,
 } from './lib/storage';
 import {
+  computeValidUntilDate,
+  DEFAULT_VALIDITY_DAYS,
   evaluateLeadSla,
   formatDateShort,
   formatMyr,
+  formatValiditySummary,
   generateLeadCode,
   generateQuoteNumber,
   generateSafeId,
@@ -93,7 +96,8 @@ export default function App() {
     actor: UserSession,
     action: AuditAction,
     entityRef: string,
-    details: string
+    details: string,
+    metadata?: AuditEntry['metadata']
   ) => {
     const entry: AuditEntry = {
       id: generateSafeId('aud'),
@@ -105,6 +109,7 @@ export default function App() {
       action,
       entityRef,
       details,
+      ...(metadata ? { metadata } : {}),
     };
     setAuditEntries((prev) => [entry, ...prev]);
   };
@@ -278,6 +283,14 @@ export default function App() {
 
     const totals = computeQuotationTotals(lineItems);
     const quoteNumber = generateQuoteNumber(quotations.length);
+    const validityDays =
+      result.quotation.validity_days && result.quotation.validity_days > 0
+        ? Math.floor(result.quotation.validity_days)
+        : DEFAULT_VALIDITY_DAYS;
+    const validUntil =
+      result.quotation.valid_until && /^\d{4}-\d{2}-\d{2}$/.test(result.quotation.valid_until)
+        ? result.quotation.valid_until
+        : computeValidUntilDate(nowIso, validityDays);
 
     const newQuotation: Quotation = {
       id: generateSafeId('qt'),
@@ -290,6 +303,9 @@ export default function App() {
       legalRemarks: DEFAULT_LEGAL_REMARKS,
       assumptions: DEFAULT_ASSUMPTIONS,
       exclusions: DEFAULT_EXCLUSIONS,
+      validityDays,
+      validUntil,
+      validityAmendments: [],
       status: 'Pending Approval',
       isApproved: false,
       approvedBy: '',
@@ -473,6 +489,9 @@ export default function App() {
       legalRemarks: DEFAULT_LEGAL_REMARKS,
       assumptions: DEFAULT_ASSUMPTIONS,
       exclusions: DEFAULT_EXCLUSIONS,
+      validityDays: DEFAULT_VALIDITY_DAYS,
+      validUntil: computeValidUntilDate(nowIso, DEFAULT_VALIDITY_DAYS),
+      validityAmendments: [],
       status: 'Pending Approval',
       isApproved: false,
       approvedBy: '',
@@ -570,6 +589,59 @@ export default function App() {
       approved
         ? `Administrator ${session.name} approved quotation (Year-1 ${formatMyr(existing.totalYearOneMyr)}). Step 8 dispatch unlocked.`
         : `Administrator ${session.name} unticked quotation approval. Step 8 dispatch re-locked.`
+    );
+  };
+
+  // Administrator-Only Quotation Validity Amendment
+  const handleAmendQuotationValidity = (
+    quotationId: string,
+    newValidityDays: number,
+    newValidUntil: string
+  ) => {
+    if (!session || session.role !== 'Administrator') return;
+    const existing = quotations.find((q) => q.id === quotationId);
+    if (!existing) return;
+
+    const nowIso = new Date().toISOString();
+    const prevDays = existing.validityDays || DEFAULT_VALIDITY_DAYS;
+    const prevUntil =
+      existing.validUntil || computeValidUntilDate(existing.createdAt, prevDays);
+    const previousValidity = formatValiditySummary(prevDays, prevUntil);
+    const safeNewDays = Math.max(1, Math.floor(newValidityDays || DEFAULT_VALIDITY_DAYS));
+    const safeNewUntil =
+      newValidUntil && /^\d{4}-\d{2}-\d{2}$/.test(newValidUntil)
+        ? newValidUntil
+        : computeValidUntilDate(existing.createdAt, safeNewDays);
+    const newValidity = formatValiditySummary(safeNewDays, safeNewUntil);
+    const amendedBy = `${session.name} (${session.email})`;
+
+    const amendmentRecord = {
+      amended_by: amendedBy,
+      previous_validity: previousValidity,
+      new_validity: newValidity,
+      amendment_timestamp: nowIso,
+    };
+
+    setQuotations((prev) =>
+      prev.map((q) =>
+        q.id === quotationId
+          ? {
+              ...q,
+              validityDays: safeNewDays,
+              validUntil: safeNewUntil,
+              validityAmendments: [amendmentRecord, ...(q.validityAmendments || [])],
+              updatedAt: nowIso,
+            }
+          : q
+      )
+    );
+
+    appendAudit(
+      session,
+      'QUOTATION_VALIDITY_AMENDED',
+      `${existing.quoteNumber} · ${existing.companyName}`,
+      `amended_by: ${amendedBy} | previous_validity: ${previousValidity} -> new_validity: ${newValidity} | amendment_timestamp: ${nowIso}`,
+      amendmentRecord
     );
   };
 
@@ -1133,6 +1205,7 @@ export default function App() {
             session={session}
             onUpdateQuotationContent={handleUpdateQuotationContent}
             onToggleApproval={handleToggleApproval}
+            onAmendValidity={handleAmendQuotationValidity}
             onDispatchQuotation={handleDispatchQuotation}
           />
         )}

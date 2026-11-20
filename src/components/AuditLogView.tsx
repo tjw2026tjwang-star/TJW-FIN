@@ -15,6 +15,7 @@ const ACTION_LABELS: Record<AuditAction, string> = {
   SCOPE_LOGGED: 'Service Scope Logged',
   QUOTATION_GENERATED: 'Quotation Draft Generated',
   QUOTATION_UPDATED: 'Quotation Edited',
+  QUOTATION_VALIDITY_AMENDED: 'Validity Amended (Admin)',
   QUOTATION_APPROVED: 'Administrator Approved',
   QUOTATION_APPROVAL_REVOKED: 'Approval Revoked',
   QUOTATION_DISPATCHED: 'Quotation Dispatched',
@@ -110,7 +111,9 @@ export function AuditLogView({ entries }: AuditLogViewProps) {
                           ? 'text-emerald-700'
                           : entry.action === 'SLA_REMINDER_LOGGED'
                             ? 'text-[#CB3737]'
-                            : 'text-[#171717]'
+                            : entry.action === 'QUOTATION_VALIDITY_AMENDED'
+                              ? 'text-[#EE6F57]'
+                              : 'text-[#171717]'
                       }
                     >
                       {ACTION_LABELS[entry.action]}

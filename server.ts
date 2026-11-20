@@ -81,11 +81,12 @@ You handle inbound client inquiries and quotation generation across 6 primary co
     - Statutory Audit: ~RM 2,500 – RM 8,000+ / year (Annually)
     - Finance Advisory / Cash Flow / FP&A: ~RM 800 – RM 3,000 / month (Monthly retainer) or ~RM 2,000 – RM 5,000 (One-off project basis)
   * Compute exact fee subtotals: total_setup_fee_myr (sum of One-off items), total_monthly_recurring_myr (sum of Monthly items), and total_annual_recurring_myr (sum of Annually items).
-  * Generate a formal client_reply_draft from T.J. Wang's Finance Department summarizing the proposed scope and confirming that final proposal dispatch is subject to management review.
+  * Default Quotation Validity: Set validity_days = 30 and valid_until = exact YYYY-MM-DD date 30 days from today's date (provided in prompt context).
+  * Generate a formal client_reply_draft from T.J. Wang's Finance Department summarizing the proposed scope and 30-day validity terms, explicitly confirming that final proposal dispatch is subject to management review.
 
-### ZERO-DATA & ACCESS CONSTRAINTS
+### ROLE-BASED ACCESS & ZERO-DATA CONSTRAINTS
 - STRICTLY NO SAMPLE DATA & NO FAKE USERS: Never fabricate unrelated mock records or fake user accounts; only process the provided inquiry/scope input.
-- TWO ROLES ONLY: Standard users (full operational access except approval rights) and administrators (full access with exclusive quotation approval rights).
+- TWO ROLES ONLY: Standard Users (full operational access except approval and validity amendments) and Administrators (exclusive authority to amend quotation validity and approve quotations for dispatch).
 
 Always return strictly valid JSON matching the provided schema.`;
 
@@ -347,11 +348,19 @@ PIC Verified Discovery Scope Notes: ${scopeNotes || 'Standard annual statutory c
         return;
       }
 
+      const today = new Date();
+      const formatYmd = (d: Date) =>
+        `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      const todayYmd = formatYmd(today);
+      const defaultValidUntilYmd = formatYmd(
+        new Date(today.getFullYear(), today.getMonth(), today.getDate() + 30)
+      );
+
       const ai = createGeminiClient();
       const response = await withRetry(() =>
         ai.models.generateContent({
           model: 'gemini-4-hydrogen',
-          contents: input.slice(0, 9500),
+          contents: `Current Date: ${todayYmd}\nDefault 30-Day Valid Until Date: ${defaultValidUntilYmd}\n\nInput:\n${input.slice(0, 9500)}`,
           config: {
             systemInstruction: UNIFIED_ASSISTANT_SYSTEM_PROMPT,
             responseMimeType: 'application/json',
@@ -409,6 +418,8 @@ PIC Verified Discovery Scope Notes: ${scopeNotes || 'Standard annual statutory c
                 quotation: {
                   type: Type.OBJECT,
                   properties: {
+                    validity_days: { type: Type.INTEGER },
+                    valid_until: { type: Type.STRING },
                     line_items: {
                       type: Type.ARRAY,
                       items: {
@@ -440,6 +451,8 @@ PIC Verified Discovery Scope Notes: ${scopeNotes || 'Standard annual statutory c
                     total_annual_recurring_myr: { type: Type.NUMBER },
                   },
                   required: [
+                    'validity_days',
+                    'valid_until',
                     'line_items',
                     'total_setup_fee_myr',
                     'total_monthly_recurring_myr',
@@ -469,6 +482,8 @@ PIC Verified Discovery Scope Notes: ${scopeNotes || 'Standard annual statutory c
       const parsed = JSON.parse(rawText) as {
         routing?: { sla_days_limit?: number };
         quotation?: {
+          validity_days?: number;
+          valid_until?: string;
           line_items?: Array<{ billing_cycle?: string; rate_myr?: number }>;
           total_setup_fee_myr?: number;
           total_monthly_recurring_myr?: number;
@@ -476,23 +491,37 @@ PIC Verified Discovery Scope Notes: ${scopeNotes || 'Standard annual statutory c
         };
       };
 
-      // Guarantee exact arithmetic subtotals and 4-working-day SLA target
+      // Guarantee exact arithmetic subtotals, 4-working-day SLA target, and 30-day default validity
       if (parsed.routing) {
         parsed.routing.sla_days_limit = 4;
       }
-      if (parsed.quotation && Array.isArray(parsed.quotation.line_items)) {
-        let setup = 0;
-        let monthly = 0;
-        let annual = 0;
-        for (const item of parsed.quotation.line_items) {
-          const rate = Number(item.rate_myr) || 0;
-          if (item.billing_cycle === 'One-off') setup += rate;
-          else if (item.billing_cycle === 'Monthly') monthly += rate;
-          else if (item.billing_cycle === 'Annually') annual += rate;
+      if (parsed.quotation) {
+        const safeDays =
+          typeof parsed.quotation.validity_days === 'number' && parsed.quotation.validity_days > 0
+            ? Math.floor(parsed.quotation.validity_days)
+            : 30;
+        parsed.quotation.validity_days = safeDays;
+        const ymdRegex = /^\d{4}-\d{2}-\d{2}$/;
+        if (!parsed.quotation.valid_until || !ymdRegex.test(parsed.quotation.valid_until)) {
+          parsed.quotation.valid_until = formatYmd(
+            new Date(today.getFullYear(), today.getMonth(), today.getDate() + safeDays)
+          );
         }
-        parsed.quotation.total_setup_fee_myr = Math.round(setup * 100) / 100;
-        parsed.quotation.total_monthly_recurring_myr = Math.round(monthly * 100) / 100;
-        parsed.quotation.total_annual_recurring_myr = Math.round(annual * 100) / 100;
+
+        if (Array.isArray(parsed.quotation.line_items)) {
+          let setup = 0;
+          let monthly = 0;
+          let annual = 0;
+          for (const item of parsed.quotation.line_items) {
+            const rate = Number(item.rate_myr) || 0;
+            if (item.billing_cycle === 'One-off') setup += rate;
+            else if (item.billing_cycle === 'Monthly') monthly += rate;
+            else if (item.billing_cycle === 'Annually') annual += rate;
+          }
+          parsed.quotation.total_setup_fee_myr = Math.round(setup * 100) / 100;
+          parsed.quotation.total_monthly_recurring_myr = Math.round(monthly * 100) / 100;
+          parsed.quotation.total_annual_recurring_myr = Math.round(annual * 100) / 100;
+        }
       }
 
       res.json({ result: parsed });

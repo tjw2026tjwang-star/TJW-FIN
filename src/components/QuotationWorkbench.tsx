@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
+  CalendarClock,
   CheckCircle2,
   Copy,
   Download,
@@ -25,7 +26,14 @@ import {
   type UserSession,
 } from '../types';
 import { computeQuotationTotals } from '../lib/pricing';
-import { formatDateTime, formatMyr, generateSafeId } from '../lib/sla';
+import {
+  computeValidityDaysFromDates,
+  computeValidUntilDate,
+  DEFAULT_VALIDITY_DAYS,
+  formatDateTime,
+  formatMyr,
+  generateSafeId,
+} from '../lib/sla';
 import {
   buildEmailProposal,
   buildWhatsAppProposal,
@@ -48,6 +56,7 @@ interface QuotationWorkbenchProps {
     }
   ) => void;
   onToggleApproval: (quotationId: string, approved: boolean) => void;
+  onAmendValidity: (quotationId: string, validityDays: number, validUntil: string) => void;
   onDispatchQuotation: (quotationId: string, channel: Exclude<DispatchChannel, ''>) => void;
 }
 
@@ -59,6 +68,7 @@ export function QuotationWorkbench({
   session,
   onUpdateQuotationContent,
   onToggleApproval,
+  onAmendValidity,
   onDispatchQuotation,
 }: QuotationWorkbenchProps) {
   const [statusFilter, setStatusFilter] = useState<'All' | QuotationStatus>('All');
@@ -69,6 +79,11 @@ export function QuotationWorkbench({
   const [hasUnsavedEdits, setHasUnsavedEdits] = useState(false);
   const [copiedMsg, setCopiedMsg] = useState(false);
   const [banner, setBanner] = useState<string | null>(null);
+
+  // Admin-only validity amendment state
+  const [amendingValidity, setAmendingValidity] = useState(false);
+  const [draftValidityDays, setDraftValidityDays] = useState<number>(DEFAULT_VALIDITY_DAYS);
+  const [draftValidUntil, setDraftValidUntil] = useState<string>('');
 
   const filteredQuotations = useMemo(() => {
     if (statusFilter === 'All') return quotations;
@@ -88,12 +103,18 @@ export function QuotationWorkbench({
   useEffect(() => {
     if (!selected) {
       setLineItems([]);
+      setAmendingValidity(false);
       return;
     }
+    const vDays = selected.validityDays || DEFAULT_VALIDITY_DAYS;
+    const vUntil = selected.validUntil || computeValidUntilDate(selected.createdAt, vDays);
     setLineItems(selected.lineItems);
     setLegalRemarks(selected.legalRemarks);
     setAssumptions(selected.assumptions);
     setExclusions(selected.exclusions);
+    setDraftValidityDays(vDays);
+    setDraftValidUntil(vUntil);
+    setAmendingValidity(false);
     setHasUnsavedEdits(false);
     setBanner(null);
   }, [selected?.id, selected?.updatedAt]);
@@ -103,6 +124,35 @@ export function QuotationWorkbench({
   const isDispatched = selected?.status === 'Dispatched';
   const isLockedFromEdit = isDispatched;
   const isAdministrator = session.role === 'Administrator';
+
+  const activeValidityDays = selected?.validityDays || DEFAULT_VALIDITY_DAYS;
+  const activeValidUntil = selected
+    ? selected.validUntil || computeValidUntilDate(selected.createdAt, activeValidityDays)
+    : '';
+
+  const handleValidityDaysInput = (daysRaw: number) => {
+    if (!selected) return;
+    const safeDays = Math.max(1, Math.min(365, Math.floor(daysRaw || 1)));
+    setDraftValidityDays(safeDays);
+    setDraftValidUntil(computeValidUntilDate(selected.createdAt, safeDays));
+  };
+
+  const handleValidUntilInput = (ymd: string) => {
+    if (!selected) return;
+    setDraftValidUntil(ymd);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(ymd)) {
+      setDraftValidityDays(computeValidityDaysFromDates(selected.createdAt, ymd));
+    }
+  };
+
+  const handleSaveValidityAmendment = () => {
+    if (!selected || !isAdministrator || !draftValidUntil) return;
+    onAmendValidity(selected.id, draftValidityDays, draftValidUntil);
+    setAmendingValidity(false);
+    setBanner(
+      `Quotation validity amended to ${draftValidityDays} days (valid until ${draftValidUntil}) and recorded in the Audit Log.`
+    );
+  };
 
   const updateItem = (idx: number, patch: Partial<QuotationLineItem>) => {
     if (isLockedFromEdit) return;
@@ -363,6 +413,151 @@ export function QuotationWorkbench({
                     </p>
                   </div>
                 </div>
+
+                {/* Quotation Validity & Administrator-Only Amendment Control */}
+                <section className="p-4 bg-[#FAFAFA] border border-[#E3E3E3] rounded-lg space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-start gap-2.5">
+                      <CalendarClock className="w-4 h-4 text-[#CB3737] shrink-0 mt-0.5" />
+                      <div>
+                        <p className="text-xs font-semibold text-[#171717]">
+                          Quotation Validity Period
+                        </p>
+                        <p className="text-xs text-neutral-600 mt-0.5 font-mono tabular-nums">
+                          {activeValidityDays} days · Valid until{' '}
+                          <strong className="text-[#171717]">{activeValidUntil}</strong>
+                        </p>
+                      </div>
+                    </div>
+
+                    {isAdministrator ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDraftValidityDays(activeValidityDays);
+                          setDraftValidUntil(activeValidUntil);
+                          setAmendingValidity((v) => !v);
+                        }}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-[#CB3737] bg-white border border-[#CB3737]/40 hover:bg-[#CB3737] hover:text-white rounded-md transition-colors whitespace-nowrap cursor-pointer"
+                      >
+                        <CalendarClock className="w-3.5 h-3.5" />
+                        {amendingValidity ? 'Close Editor' : 'Amend Validity'}
+                      </button>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          disabled
+                          title="Only Administrators are authorized to amend quotation validity"
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-neutral-400 bg-white border border-[#E3E3E3] rounded-md cursor-not-allowed whitespace-nowrap"
+                        >
+                          <Lock className="w-3 h-3" />
+                          Amend Validity (Admin Only)
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {!isAdministrator && (
+                    <p className="text-[11px] text-neutral-500">
+                      Read-only display for Standard User role. Only Administrators can extend or
+                      adjust quotation validity dates.
+                    </p>
+                  )}
+
+                  {isAdministrator && amendingValidity && (
+                    <div className="pt-3 border-t border-[#E3E3E3] space-y-3">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="text-[11px] font-medium text-neutral-500 mr-1">
+                          Quick Presets:
+                        </span>
+                        {[14, 30, 60, 90].map((preset) => (
+                          <button
+                            key={preset}
+                            type="button"
+                            onClick={() => handleValidityDaysInput(preset)}
+                            className={`px-2.5 py-1 text-xs font-medium rounded-md border transition-colors cursor-pointer ${
+                              draftValidityDays === preset
+                                ? 'bg-[#CB3737] text-white border-[#CB3737]'
+                                : 'bg-white text-neutral-700 border-[#E3E3E3] hover:border-neutral-400'
+                            }`}
+                          >
+                            {preset} days
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-[11px] font-medium text-neutral-700 mb-1">
+                            Custom Validity (Days)
+                          </label>
+                          <input
+                            type="number"
+                            min={1}
+                            max={365}
+                            value={draftValidityDays}
+                            onChange={(e) => handleValidityDaysInput(Number(e.target.value))}
+                            className="w-full px-3 py-1.5 text-xs font-mono tabular-nums bg-white border border-[#E3E3E3] rounded-md focus:outline-none focus:border-[#CB3737]"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-medium text-neutral-700 mb-1">
+                            Valid Until Date (`valid_until`)
+                          </label>
+                          <input
+                            type="date"
+                            value={draftValidUntil}
+                            onChange={(e) => handleValidUntilInput(e.target.value)}
+                            className="w-full px-3 py-1.5 text-xs font-mono tabular-nums bg-white border border-[#E3E3E3] rounded-md focus:outline-none focus:border-[#CB3737]"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setAmendingValidity(false)}
+                          className="px-3 py-1.5 text-xs font-medium text-neutral-600 bg-white border border-[#E3E3E3] rounded-md hover:bg-neutral-50 cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleSaveValidityAmendment}
+                          className="px-3.5 py-1.5 text-xs font-semibold text-white bg-[#CB3737] hover:bg-[#B02D2D] rounded-md transition-colors cursor-pointer"
+                        >
+                          Save Validity Amendment
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {selected.validityAmendments && selected.validityAmendments.length > 0 && (
+                    <div className="pt-2.5 border-t border-[#E3E3E3] space-y-1.5">
+                      <p className="text-[11px] font-semibold text-neutral-600">
+                        Validity Amendment Audit Trail ({selected.validityAmendments.length})
+                      </p>
+                      <div className="space-y-1">
+                        {selected.validityAmendments.map((am, idx) => (
+                          <p
+                            key={`${am.amendment_timestamp}-${idx}`}
+                            className="text-[11px] text-neutral-600 leading-relaxed"
+                          >
+                            <span className="font-mono tabular-nums text-neutral-500">
+                              {formatDateTime(am.amendment_timestamp)}
+                            </span>{' '}
+                            · <strong>{am.amended_by}</strong> changed{' '}
+                            <span className="line-through text-neutral-400">
+                              {am.previous_validity}
+                            </span>{' '}
+                            &rarr; <strong className="text-[#171717]">{am.new_validity}</strong>
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </section>
 
                 {/* Step 6 Interactive Line-Item Editor */}
                 <section className="space-y-3">

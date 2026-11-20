@@ -271,6 +271,16 @@ export function AssistantWorkbench({
                 {/* Quotation Section */}
                 {hasQuoteItems && (
                   <div className="space-y-3 pt-4 border-t border-[#E3E3E3]">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <span className="font-semibold text-[#171717]">
+                        Proposed MYR Quotation Schedule
+                      </span>
+                      <span className="font-mono tabular-nums text-neutral-600">
+                        Validity: {result.quotation.validity_days || 30} days · Valid until{' '}
+                        <strong className="text-[#171717]">{result.quotation.valid_until}</strong>
+                      </span>
+                    </div>
+
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                       <div className="p-3 bg-[#FAFAFA] border border-[#E3E3E3] rounded-lg">
                         <p className="text-[11px] text-neutral-500">Setup Fee (One-off)</p>

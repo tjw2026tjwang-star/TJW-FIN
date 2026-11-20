@@ -47,6 +47,7 @@ export type AuditAction =
   | 'SCOPE_LOGGED'
   | 'QUOTATION_GENERATED'
   | 'QUOTATION_UPDATED'
+  | 'QUOTATION_VALIDITY_AMENDED'
   | 'QUOTATION_APPROVED'
   | 'QUOTATION_APPROVAL_REVOKED'
   | 'QUOTATION_DISPATCHED';
@@ -143,12 +144,21 @@ export interface AssistantResponse {
     routing_reason: string;
   };
   quotation: {
+    validity_days: number;
+    valid_until: string;
     line_items: AssistantLineItem[];
     total_setup_fee_myr: number;
     total_monthly_recurring_myr: number;
     total_annual_recurring_myr: number;
   };
   client_reply_draft: string;
+}
+
+export interface ValidityAmendment {
+  amended_by: string;
+  previous_validity: string;
+  new_validity: string;
+  amendment_timestamp: string;
 }
 
 export interface Lead {
@@ -201,6 +211,9 @@ export interface Quotation {
   legalRemarks: string;
   assumptions: string;
   exclusions: string;
+  validityDays: number;
+  validUntil: string; // YYYY-MM-DD
+  validityAmendments?: ValidityAmendment[];
   status: QuotationStatus;
   isApproved: boolean;
   approvedBy: string;
@@ -223,4 +236,10 @@ export interface AuditEntry {
   action: AuditAction;
   entityRef: string;
   details: string;
+  metadata?: {
+    amended_by?: string;
+    previous_validity?: string;
+    new_validity?: string;
+    amendment_timestamp?: string;
+  };
 }
