@@ -12,9 +12,12 @@ interface AuditLogViewProps {
 const ACTION_LABELS: Record<AuditAction, string> = {
   VIEW_PAGE: 'VIEW_PAGE',
   TRIAGE_INBOUND_LEAD: 'TRIAGE_INBOUND_LEAD',
+  EDIT_LEAD_TRIAGE: 'EDIT_LEAD_TRIAGE',
   UPDATE_CONTACT_STATUS: 'UPDATE_CONTACT_STATUS',
+  EDIT_CONTACT_STATUS: 'EDIT_CONTACT_STATUS',
   LOG_SERVICE_SCOPE: 'LOG_SERVICE_SCOPE',
   GENERATE_QUOTATION: 'GENERATE_QUOTATION',
+  EDIT_QUOTATION_DRAFT: 'EDIT_QUOTATION_DRAFT',
   AMEND_QUOTATION_VALIDITY: 'AMEND_QUOTATION_VALIDITY',
   APPROVE_QUOTATION: 'APPROVE_QUOTATION',
   DISPATCH_QUOTATION: 'DISPATCH_QUOTATION',
@@ -100,7 +103,13 @@ export function AuditLogView({ entries, session, onSyncServerLogs }: AuditLogVie
     if (action === 'AMEND_QUOTATION_VALIDITY' || action === 'EXPORT_AUDIT_LOG') {
       return 'text-[#CB3737]';
     }
-    if (action === 'TRIAGE_INBOUND_LEAD' || action === 'GENERATE_QUOTATION') {
+    if (
+      action === 'TRIAGE_INBOUND_LEAD' ||
+      action === 'EDIT_LEAD_TRIAGE' ||
+      action === 'EDIT_CONTACT_STATUS' ||
+      action === 'GENERATE_QUOTATION' ||
+      action === 'EDIT_QUOTATION_DRAFT'
+    ) {
       return 'text-[#EE6F57]';
     }
     return 'text-[#171717]';

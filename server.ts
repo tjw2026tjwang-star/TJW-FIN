@@ -164,7 +164,7 @@ Using confirmed PIC discovery scope notes, entity profile, and required service 
 - Statutory Audit: RM 2,500 - RM 8,000+ / year scaled by revenue and complexity (billed Annual).
 - Finance Advisory / Cash Flow / FP&A: RM 800 - RM 3,000 / month (retainer, billed Monthly) or RM 2,000 - RM 5,000 (one-off project basis, billed One-off).
 
-Provide clear, practical deliverables for each line item, plus concise Malaysian corporate legal remarks (validity 30 days, SST 8% service tax note where applicable, payment terms 50% deposit upon acceptance, and notice that final proposal dispatch is subject to management review), realistic scoping assumptions, and explicit out-of-scope exclusions.
+Provide clear, practical deliverables for each line item, plus concise Malaysian corporate legal remarks (validity 7 calendar days, SST 8% service tax note where applicable, payment terms 50% deposit upon acceptance, and notice that final proposal dispatch is subject to management review), realistic scoping assumptions, and explicit out-of-scope exclusions.
 Output exact JSON matching the schema.`;
 
 const UNIFIED_ASSISTANT_SYSTEM_PROMPT = `You are the Lead Triage, SLA Routing, Quotation Intelligence, and Compliance Audit Engine for T.J. Wang's Finance Department.
@@ -184,7 +184,7 @@ You handle inbound client inquiries, quotation generation, and operational compl
   * Extract prospect details into lead_profile (company_name, contact_person, contact_phone, contact_email, entity_type: Sdn Bhd | Enterprise | LLP | Unknown).
   * Assign primary_dept and any secondary_depts from: Co Sec, Accounting, Audit, Tax, Payroll, Finance.
   * Set sla_days_limit = 4 and provide a concise 2-sentence routing_reason summarizing the prospect's background, core requirement, and noting that the assigned PIC must contact the lead within 4 working days.
-  * Return an empty quotation.line_items array with 0.00 totals and default validity_days = 30.
+  * Return an empty quotation.line_items array with 0.00 totals and default validity_days = 7.
   * Draft a polite, professional initial acknowledgement client_reply_draft.
 - For QUOTATION_GENERATION (Task 2):
   * Parse annual revenue/turnover tier, monthly transaction volume, employee headcount, advisory scope, and compliance deadlines.
@@ -197,9 +197,9 @@ You handle inbound client inquiries, quotation generation, and operational compl
     - Statutory Audit: ~RM 2,500 – RM 8,000+ / year (Annually)
     - Finance Advisory / Cash Flow / FP&A: ~RM 800 – RM 3,000 / month (Monthly retainer) or ~RM 2,000 – RM 5,000 (One-off project basis)
   * Compute exact fee subtotals: total_setup_fee_myr (sum of One-off items), total_monthly_recurring_myr (sum of Monthly items), and total_annual_recurring_myr (sum of Annually items).
-  * Default Quotation Validity: Set validity_days = 30 and valid_until = exact YYYY-MM-DD date 30 days from today's date (provided in prompt context).
-  * Generate a formal client_reply_draft from T.J. Wang's Finance Department summarizing the proposed scope and 30-day validity terms, explicitly confirming that final proposal dispatch is subject to management review.
-- ALWAYS populate audit_event accurately reflecting the user session context and the action_taken (e.g., TRIAGE_INBOUND_LEAD, GENERATE_QUOTATION, VIEW_PAGE, etc.) with Asia/Kuala_Lumpur ISO 8601 timestamp (+08:00).
+  * Default Quotation Validity (FIXED): Set validity_days = 7 and valid_until = exact YYYY-MM-DD date 7 calendar days from today's date (provided in prompt context).
+  * Generate a formal client_reply_draft from T.J. Wang's Finance Department summarizing the proposed scope and 7-day validity terms, explicitly confirming that final proposal dispatch is subject to management review.
+- ALWAYS populate audit_event accurately reflecting the user session context and the action_taken (e.g., TRIAGE_INBOUND_LEAD, EDIT_LEAD_TRIAGE, EDIT_CONTACT_STATUS, GENERATE_QUOTATION, EDIT_QUOTATION_DRAFT, VIEW_PAGE, etc.) with Asia/Kuala_Lumpur ISO 8601 timestamp (+08:00).
 
 ### ROLE-BASED ACCESS & IMMUTABLE AUDIT CONSTRAINTS
 - STRICTLY NO SAMPLE DATA & NO FAKE USERS: Never fabricate unrelated mock records or fake user accounts; only process the provided input.
@@ -600,7 +600,7 @@ PIC Verified Discovery Scope Notes: ${scopeNotes || 'Standard annual statutory c
         `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
       const todayYmd = formatYmd(today);
       const defaultValidUntilYmd = formatYmd(
-        new Date(today.getFullYear(), today.getMonth(), today.getDate() + 30)
+        new Date(today.getFullYear(), today.getMonth(), today.getDate() + 7)
       );
       const klTimestamp = formatKualaLumpurIso(today);
       const nextLogId = `LOG-${formatKualaLumpurCompactDate(today)}-${String(
@@ -621,7 +621,7 @@ PIC Verified Discovery Scope Notes: ${scopeNotes || 'Standard annual statutory c
           model: 'gemini-4-hydrogen',
           contents: `Current Date: ${todayYmd}
 Current Kuala Lumpur Timestamp (UTC+8): ${klTimestamp}
-Default 30-Day Valid Until Date: ${defaultValidUntilYmd}
+Fixed Default 7-Day Valid Until Date: ${defaultValidUntilYmd}
 Assigned Audit Log ID: ${nextLogId}
 Active Session Context: user_name="${ctxName}", user_email="${ctxEmail}", user_role="${ctxRole}", department="${ctxDept}", page_visited="${ctxPage}"
 
@@ -793,22 +793,13 @@ ${input.slice(0, 9500)}`,
         audit_event?: Partial<ImmutableAuditRecord>;
       };
 
-      // Guarantee exact arithmetic subtotals, 4-working-day SLA target, and 30-day default validity
+      // Guarantee exact arithmetic subtotals, 4-working-day SLA target, and fixed 7-day default validity
       if (parsed.routing) {
         parsed.routing.sla_days_limit = 4;
       }
       if (parsed.quotation) {
-        const safeDays =
-          typeof parsed.quotation.validity_days === 'number' && parsed.quotation.validity_days > 0
-            ? Math.floor(parsed.quotation.validity_days)
-            : 30;
-        parsed.quotation.validity_days = safeDays;
-        const ymdRegex = /^\d{4}-\d{2}-\d{2}$/;
-        if (!parsed.quotation.valid_until || !ymdRegex.test(parsed.quotation.valid_until)) {
-          parsed.quotation.valid_until = formatYmd(
-            new Date(today.getFullYear(), today.getMonth(), today.getDate() + safeDays)
-          );
-        }
+        parsed.quotation.validity_days = 7;
+        parsed.quotation.valid_until = defaultValidUntilYmd;
 
         if (Array.isArray(parsed.quotation.line_items)) {
           let setup = 0;

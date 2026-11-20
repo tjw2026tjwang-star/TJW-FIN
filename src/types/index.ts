@@ -42,9 +42,12 @@ export type DispatchChannel = '' | 'Email' | 'WhatsApp';
 export type AuditAction =
   | 'VIEW_PAGE'
   | 'TRIAGE_INBOUND_LEAD'
+  | 'EDIT_LEAD_TRIAGE'
   | 'UPDATE_CONTACT_STATUS'
+  | 'EDIT_CONTACT_STATUS'
   | 'LOG_SERVICE_SCOPE'
   | 'GENERATE_QUOTATION'
+  | 'EDIT_QUOTATION_DRAFT'
   | 'AMEND_QUOTATION_VALIDITY'
   | 'APPROVE_QUOTATION'
   | 'DISPATCH_QUOTATION'

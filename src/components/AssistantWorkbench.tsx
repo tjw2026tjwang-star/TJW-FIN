@@ -290,7 +290,7 @@ export function AssistantWorkbench({
                         Proposed MYR Quotation Schedule
                       </span>
                       <span className="font-mono tabular-nums text-neutral-600">
-                        Validity: {result.quotation.validity_days || 30} days · Valid until{' '}
+                        Validity: {result.quotation.validity_days || 7} days · Valid until{' '}
                         <strong className="text-[#171717]">{result.quotation.valid_until}</strong>
                       </span>
                     </div>

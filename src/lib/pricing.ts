@@ -254,7 +254,7 @@ export function computeQuotationTotals(
 }
 
 export const DEFAULT_LEGAL_REMARKS =
-  'All professional fees are quoted in Ringgit Malaysia (MYR) and exclude 8% Service Tax (SST) where applicable. Proposal validity is 30 calendar days from issue date. 50% mobilization deposit is payable upon engagement acceptance.';
+  'All professional fees are quoted in Ringgit Malaysia (MYR) and exclude 8% Service Tax (SST) where applicable. Proposal validity is 7 calendar days from issue date. 50% mobilization deposit is payable upon engagement acceptance.';
 
 export const DEFAULT_ASSUMPTIONS =
   'Client provides complete bank statements, invoices, payroll input changes, and statutory documentation within agreed monthly cutoff dates.';

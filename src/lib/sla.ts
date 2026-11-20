@@ -166,7 +166,7 @@ export function generateQuoteNumber(existingCount: number): string {
   return `QT-${seq}`;
 }
 
-export const DEFAULT_VALIDITY_DAYS = 30;
+export const DEFAULT_VALIDITY_DAYS = 7;
 
 export function toYmd(date: Date): string {
   const y = date.getFullYear();

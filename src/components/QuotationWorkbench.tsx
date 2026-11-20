@@ -8,6 +8,7 @@ import {
   Lock,
   Mail,
   MessageSquare,
+  Pencil,
   Plus,
   Send,
   ShieldAlert,
@@ -77,6 +78,7 @@ export function QuotationWorkbench({
   const [assumptions, setAssumptions] = useState('');
   const [exclusions, setExclusions] = useState('');
   const [hasUnsavedEdits, setHasUnsavedEdits] = useState(false);
+  const [editingDraft, setEditingDraft] = useState(false);
   const [copiedMsg, setCopiedMsg] = useState(false);
   const [banner, setBanner] = useState<string | null>(null);
 
@@ -104,6 +106,7 @@ export function QuotationWorkbench({
     if (!selected) {
       setLineItems([]);
       setAmendingValidity(false);
+      setEditingDraft(false);
       return;
     }
     const vDays = selected.validityDays || DEFAULT_VALIDITY_DAYS;
@@ -115,6 +118,7 @@ export function QuotationWorkbench({
     setDraftValidityDays(vDays);
     setDraftValidUntil(vUntil);
     setAmendingValidity(false);
+    setEditingDraft(false);
     setHasUnsavedEdits(false);
     setBanner(null);
   }, [selected?.id, selected?.updatedAt]);
@@ -122,7 +126,8 @@ export function QuotationWorkbench({
   const liveTotals = useMemo(() => computeQuotationTotals(lineItems), [lineItems]);
 
   const isDispatched = selected?.status === 'Dispatched';
-  const isLockedFromEdit = isDispatched;
+  const canEditDraft = Boolean(selected && !selected.isApproved && !isDispatched);
+  const isLockedFromEdit = !canEditDraft || !editingDraft;
   const isAdministrator = session.role === 'Administrator';
 
   const activeValidityDays = selected?.validityDays || DEFAULT_VALIDITY_DAYS;
@@ -198,7 +203,7 @@ export function QuotationWorkbench({
   };
 
   const handleSaveEdits = () => {
-    if (!selected || isLockedFromEdit) return;
+    if (!selected || !canEditDraft) return;
     onUpdateQuotationContent(selected.id, {
       lineItems,
       legalRemarks,
@@ -206,7 +211,8 @@ export function QuotationWorkbench({
       exclusions,
     });
     setHasUnsavedEdits(false);
-    setBanner('Quotation line items and fee totals saved.');
+    setEditingDraft(false);
+    setBanner('Quotation draft updated, subtotals recomputed, and logged (EDIT_QUOTATION_DRAFT).');
   };
 
   const previewQuotation: Quotation | null = selected
@@ -469,9 +475,9 @@ export function QuotationWorkbench({
                     <div className="pt-3 border-t border-[#E3E3E3] space-y-3">
                       <div className="flex flex-wrap items-center gap-1.5">
                         <span className="text-[11px] font-medium text-neutral-500 mr-1">
-                          Quick Presets:
+                          Quick Presets (Default 7d):
                         </span>
-                        {[14, 30, 60, 90].map((preset) => (
+                        {[7, 14, 30, 60].map((preset) => (
                           <button
                             key={preset}
                             type="button"
@@ -572,19 +578,40 @@ export function QuotationWorkbench({
                         Finance RM 800–3k/mo or RM 2k–5k project
                       </p>
                     </div>
-                    {!isLockedFromEdit ? (
-                      <button
-                        type="button"
-                        onClick={addLineItem}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#CB3737] bg-[#CB3737]/5 hover:bg-[#CB3737]/10 rounded-md transition-colors whitespace-nowrap cursor-pointer"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                        Add Line Item
-                      </button>
+                    {canEditDraft ? (
+                      <div className="flex items-center gap-2">
+                        {editingDraft && (
+                          <button
+                            type="button"
+                            onClick={addLineItem}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#CB3737] bg-[#CB3737]/5 hover:bg-[#CB3737]/10 rounded-md transition-colors whitespace-nowrap cursor-pointer"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                            Add Line Item
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (editingDraft && selected) {
+                              setLineItems(selected.lineItems);
+                              setLegalRemarks(selected.legalRemarks);
+                              setAssumptions(selected.assumptions);
+                              setExclusions(selected.exclusions);
+                              setHasUnsavedEdits(false);
+                            }
+                            setEditingDraft((v) => !v);
+                          }}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-[#CB3737] bg-white border border-[#CB3737]/35 hover:bg-[#CB3737] hover:text-white rounded-md transition-colors whitespace-nowrap cursor-pointer"
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                          {editingDraft ? 'Cancel Edit' : 'Edit'}
+                        </button>
+                      </div>
                     ) : (
                       <span className="inline-flex items-center gap-1 text-xs text-neutral-500 font-medium">
                         <Lock className="w-3.5 h-3.5" />
-                        Locked after dispatch
+                        {isDispatched ? 'Locked after dispatch' : 'Locked while approved'}
                       </span>
                     )}
                   </div>
@@ -783,14 +810,30 @@ export function QuotationWorkbench({
                     </div>
                   </div>
 
-                  {!isLockedFromEdit && hasUnsavedEdits && (
-                    <div className="flex justify-end pt-1">
+                  {editingDraft && canEditDraft && (
+                    <div className="flex justify-end gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (selected) {
+                            setLineItems(selected.lineItems);
+                            setLegalRemarks(selected.legalRemarks);
+                            setAssumptions(selected.assumptions);
+                            setExclusions(selected.exclusions);
+                          }
+                          setHasUnsavedEdits(false);
+                          setEditingDraft(false);
+                        }}
+                        className="px-3.5 py-2 text-xs font-medium text-neutral-600 bg-white border border-[#E3E3E3] rounded-lg hover:bg-neutral-50 cursor-pointer"
+                      >
+                        Cancel
+                      </button>
                       <button
                         type="button"
                         onClick={handleSaveEdits}
-                        className="px-4 py-2 text-xs font-semibold text-white bg-[#EE6F57] hover:bg-[#DC5E46] rounded-lg transition-colors cursor-pointer"
+                        className="px-4 py-2 text-xs font-semibold text-white bg-[#CB3737] hover:bg-[#B02D2D] rounded-lg transition-colors cursor-pointer"
                       >
-                        Save Line-Item Changes
+                        Save Draft Changes
                       </button>
                     </div>
                   )}

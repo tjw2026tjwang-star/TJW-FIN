@@ -6,16 +6,19 @@ import {
   Calculator,
   Check,
   FileText,
+  Pencil,
   X,
 } from 'lucide-react';
 import {
   ACCOUNTING_STATES,
   DEPARTMENTS,
   DEPARTMENT_FULL_NAMES,
+  ENTITY_TYPES,
   TURNOVER_TIERS,
   type AccountingState,
   type ContactStatus,
   type Department,
+  type EntityType,
   type FinanceEngagementMode,
   type Lead,
   type LeadScope,
@@ -25,14 +28,29 @@ import {
 } from '../types';
 import { evaluateLeadSla, formatDateTime, formatMyr } from '../lib/sla';
 
+export interface EditLeadTriagePayload {
+  companyName: string;
+  contactPerson: string;
+  contactPhone: string;
+  contactEmail: string;
+  entityType: EntityType;
+  targetDept: Department;
+  secondaryDepts: Department[];
+  assignedPicName: string;
+  inquiryNotes: string;
+}
+
 interface LeadDetailDrawerProps {
   lead: Lead | null;
   linkedQuotation?: Quotation;
+  initialEditTriage?: boolean;
   onClose: () => void;
+  onEditLeadTriage: (leadId: string, payload: EditLeadTriagePayload) => void;
   onUpdateOutreach: (
     leadId: string,
     payload: {
       contactStatus: ContactStatus;
+      firstContactAt: string;
       outreachChannel: OutreachChannel;
       outreachNotes: string;
     }
@@ -41,6 +59,14 @@ interface LeadDetailDrawerProps {
   onSaveScope: (leadId: string, scope: Omit<LeadScope, 'completed' | 'updatedAt'>) => void;
   onGenerateQuotation: (leadId: string, scope: Omit<LeadScope, 'completed' | 'updatedAt'>) => void;
   onOpenQuotation: (quotationId: string) => void;
+}
+
+function toLocalDateTimeInput(iso?: string): string {
+  if (!iso) return '';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 const STEPS = [
@@ -60,14 +86,31 @@ function stageOrder(stage: Lead['workflowStage']): number {
 export function LeadDetailDrawer({
   lead,
   linkedQuotation,
+  initialEditTriage = false,
   onClose,
+  onEditLeadTriage,
   onUpdateOutreach,
   onLogSlaReminder,
   onSaveScope,
   onGenerateQuotation,
   onOpenQuotation,
 }: LeadDetailDrawerProps) {
+  // Step 1 Edit Triage state
+  const [editingTriage, setEditingTriage] = useState(false);
+  const [triageCompanyName, setTriageCompanyName] = useState('');
+  const [triageContactPerson, setTriageContactPerson] = useState('');
+  const [triageContactPhone, setTriageContactPhone] = useState('');
+  const [triageContactEmail, setTriageContactEmail] = useState('');
+  const [triageEntityType, setTriageEntityType] = useState<EntityType>('Sdn Bhd');
+  const [triageTargetDept, setTriageTargetDept] = useState<Department>('Co Sec');
+  const [triageSecondaryDepts, setTriageSecondaryDepts] = useState<Department[]>([]);
+  const [triageAssignedPic, setTriageAssignedPic] = useState('');
+  const [triageInquiryNotes, setTriageInquiryNotes] = useState('');
+
+  // Step 3 Edit Contact & SLA state
+  const [editingContact, setEditingContact] = useState(false);
   const [contactStatus, setContactStatus] = useState<ContactStatus>('Pending Contact');
+  const [firstContactLocal, setFirstContactLocal] = useState('');
   const [outreachChannel, setOutreachChannel] = useState<OutreachChannel>('Phone');
   const [outreachNotes, setOutreachNotes] = useState('');
 
@@ -87,7 +130,20 @@ export function LeadDetailDrawer({
 
   useEffect(() => {
     if (!lead) return;
+    setEditingTriage(initialEditTriage);
+    setTriageCompanyName(lead.companyName);
+    setTriageContactPerson(lead.contactPerson);
+    setTriageContactPhone(lead.contactPhone);
+    setTriageContactEmail(lead.contactEmail);
+    setTriageEntityType(lead.entityType);
+    setTriageTargetDept(lead.targetDept);
+    setTriageSecondaryDepts(lead.secondaryDepts);
+    setTriageAssignedPic(lead.assignedPicName);
+    setTriageInquiryNotes(lead.inquiryNotes);
+
+    setEditingContact(false);
     setContactStatus(lead.contactStatus);
+    setFirstContactLocal(toLocalDateTimeInput(lead.firstContactAt));
     setOutreachChannel(lead.outreachChannel || 'Phone');
     setOutreachNotes(lead.outreachNotes || '');
 
@@ -110,7 +166,7 @@ export function LeadDetailDrawer({
     );
     setScopeNotes(lead.scope.scopeNotes || '');
     setFeedback(null);
-  }, [lead]);
+  }, [lead, initialEditTriage]);
 
   if (!lead) return null;
 
@@ -123,6 +179,33 @@ export function LeadDetailDrawer({
     if (tier && !annualTurnoverMyr) {
       setAnnualTurnoverMyr(String(tier.numericValue));
     }
+  };
+
+  const toggleTriageSecondary = (dept: Department) => {
+    if (dept === triageTargetDept) return;
+    setTriageSecondaryDepts((prev) =>
+      prev.includes(dept) ? prev.filter((d) => d !== dept) : [...prev, dept]
+    );
+  };
+
+  const handleSaveTriageEdit = () => {
+    if (!triageCompanyName.trim() || !triageContactPerson.trim() || !triageAssignedPic.trim()) {
+      setFeedback('Company Name, Contact Person, and Assigned PIC are required.');
+      return;
+    }
+    onEditLeadTriage(lead.id, {
+      companyName: triageCompanyName.trim(),
+      contactPerson: triageContactPerson.trim(),
+      contactPhone: triageContactPhone.trim(),
+      contactEmail: triageContactEmail.trim(),
+      entityType: triageEntityType,
+      targetDept: triageTargetDept,
+      secondaryDepts: triageSecondaryDepts.filter((d) => d !== triageTargetDept),
+      assignedPicName: triageAssignedPic.trim(),
+      inquiryNotes: triageInquiryNotes.trim(),
+    });
+    setEditingTriage(false);
+    setFeedback('Step 1 triage record updated and logged (EDIT_LEAD_TRIAGE).');
   };
 
   const toggleService = (dept: Department) => {
@@ -151,15 +234,31 @@ export function LeadDetailDrawer({
   };
 
   const handleSaveOutreachClick = () => {
+    let resolvedFirstContactAt = lead.firstContactAt;
+    if (contactStatus === 'Contacted') {
+      if (firstContactLocal) {
+        const parsed = new Date(firstContactLocal);
+        resolvedFirstContactAt = Number.isNaN(parsed.getTime())
+          ? new Date().toISOString()
+          : parsed.toISOString();
+      } else {
+        resolvedFirstContactAt = lead.firstContactAt || new Date().toISOString();
+      }
+    } else if (contactStatus === 'Pending Contact') {
+      resolvedFirstContactAt = '';
+    }
+
     onUpdateOutreach(lead.id, {
       contactStatus,
+      firstContactAt: resolvedFirstContactAt,
       outreachChannel,
       outreachNotes: outreachNotes.trim(),
     });
+    setEditingContact(false);
     setFeedback(
       contactStatus === 'Contacted'
-        ? 'Lead marked Contacted. First-contact timestamp recorded and SLA timer frozen.'
-        : `Contact status updated to "${contactStatus}".`
+        ? 'Contact status saved as Contacted. SLA clock frozen against first_contact_at and logged (EDIT_CONTACT_STATUS).'
+        : `Contact status updated to "${contactStatus}" and logged (EDIT_CONTACT_STATUS).`
     );
   };
 
@@ -304,40 +403,243 @@ export function LeadDetailDrawer({
             </div>
           )}
 
-          {/* Step 1 & 2 Assignment Overview */}
-          <section className="space-y-2.5">
+          {/* Step 1 & 2 Assignment Overview ([Edit] Button Enabled) */}
+          <section className="space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <h3 className="text-sm font-semibold text-[#171717]">
-                01. Inquiry Brief &amp; PIC Assignment
-              </h3>
+              <div className="flex items-center gap-2.5">
+                <h3 className="text-sm font-semibold text-[#171717]">
+                  01. Inquiry Brief &amp; PIC Routing (Step 1)
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (editingTriage) {
+                      setTriageCompanyName(lead.companyName);
+                      setTriageContactPerson(lead.contactPerson);
+                      setTriageContactPhone(lead.contactPhone);
+                      setTriageContactEmail(lead.contactEmail);
+                      setTriageEntityType(lead.entityType);
+                      setTriageTargetDept(lead.targetDept);
+                      setTriageSecondaryDepts(lead.secondaryDepts);
+                      setTriageAssignedPic(lead.assignedPicName);
+                      setTriageInquiryNotes(lead.inquiryNotes);
+                    }
+                    setEditingTriage((v) => !v);
+                  }}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-[#CB3737] bg-[#CB3737]/5 hover:bg-[#CB3737]/10 border border-[#CB3737]/25 rounded-md transition-colors cursor-pointer"
+                >
+                  <Pencil className="w-3 h-3" />
+                  {editingTriage ? 'Cancel' : 'Edit'}
+                </button>
+              </div>
               <span className="text-xs font-mono tabular-nums text-neutral-500">
                 received_at: {formatDateTime(lead.receivedAt)}
               </span>
             </div>
-            <p className="text-sm text-neutral-700 leading-relaxed">
-              {lead.inquiryNotes || 'No additional inquiry notes entered.'}
-            </p>
-            <div className="flex flex-wrap items-center gap-2 text-xs text-neutral-500">
-              <span>Assigned PIC: <strong className="text-neutral-800">{lead.assignedPicName}</strong></span>
-              <span aria-hidden="true">·</span>
-              <span>Target Dept: <strong className="text-neutral-800">{DEPARTMENT_FULL_NAMES[lead.targetDept]}</strong></span>
-              {lead.secondaryDepts.length > 0 && (
-                <>
+
+            {editingTriage ? (
+              <div className="p-4 bg-[#FAFAFA] border border-[#E3E3E3] rounded-lg space-y-3.5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-medium text-neutral-700 mb-1">
+                      Company Name
+                    </label>
+                    <input
+                      type="text"
+                      value={triageCompanyName}
+                      onChange={(e) => setTriageCompanyName(e.target.value)}
+                      className="w-full px-3 py-1.5 text-xs bg-white border border-[#E3E3E3] rounded-md focus:outline-none focus:border-[#CB3737]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-medium text-neutral-700 mb-1">
+                      Entity Type
+                    </label>
+                    <select
+                      value={triageEntityType}
+                      onChange={(e) => setTriageEntityType(e.target.value as EntityType)}
+                      className="w-full px-3 py-1.5 text-xs bg-white border border-[#E3E3E3] rounded-md focus:outline-none focus:border-[#CB3737]"
+                    >
+                      {ENTITY_TYPES.map((type) => (
+                        <option key={type} value={type}>
+                          {type}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-medium text-neutral-700 mb-1">
+                      Contact Person
+                    </label>
+                    <input
+                      type="text"
+                      value={triageContactPerson}
+                      onChange={(e) => setTriageContactPerson(e.target.value)}
+                      className="w-full px-3 py-1.5 text-xs bg-white border border-[#E3E3E3] rounded-md focus:outline-none focus:border-[#CB3737]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-medium text-neutral-700 mb-1">
+                      Phone / WhatsApp
+                    </label>
+                    <input
+                      type="text"
+                      value={triageContactPhone}
+                      onChange={(e) => setTriageContactPhone(e.target.value)}
+                      className="w-full px-3 py-1.5 text-xs bg-white border border-[#E3E3E3] rounded-md focus:outline-none focus:border-[#CB3737]"
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="block text-[11px] font-medium text-neutral-700 mb-1">
+                      Email Address
+                    </label>
+                    <input
+                      type="email"
+                      value={triageContactEmail}
+                      onChange={(e) => setTriageContactEmail(e.target.value)}
+                      className="w-full px-3 py-1.5 text-xs bg-white border border-[#E3E3E3] rounded-md focus:outline-none focus:border-[#CB3737]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-medium text-neutral-700 mb-1">
+                      Assigned Primary Department
+                    </label>
+                    <select
+                      value={triageTargetDept}
+                      onChange={(e) => {
+                        const next = e.target.value as Department;
+                        setTriageTargetDept(next);
+                        setTriageSecondaryDepts((prev) => prev.filter((d) => d !== next));
+                      }}
+                      className="w-full px-3 py-1.5 text-xs bg-white border border-[#E3E3E3] rounded-md focus:outline-none focus:border-[#CB3737]"
+                    >
+                      {DEPARTMENTS.map((dept) => (
+                        <option key={dept} value={dept}>
+                          {dept} — {DEPARTMENT_FULL_NAMES[dept]}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-medium text-neutral-700 mb-1">
+                      Assigned PIC
+                    </label>
+                    <input
+                      type="text"
+                      value={triageAssignedPic}
+                      onChange={(e) => setTriageAssignedPic(e.target.value)}
+                      className="w-full px-3 py-1.5 text-xs bg-white border border-[#E3E3E3] rounded-md focus:outline-none focus:border-[#CB3737]"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <span className="block text-[11px] font-medium text-neutral-700 mb-1">
+                    Secondary Departments
+                  </span>
+                  <div className="flex flex-wrap gap-1.5">
+                    {DEPARTMENTS.filter((d) => d !== triageTargetDept).map((dept) => {
+                      const active = triageSecondaryDepts.includes(dept);
+                      return (
+                        <button
+                          key={dept}
+                          type="button"
+                          onClick={() => toggleTriageSecondary(dept)}
+                          className={`px-2.5 py-1 text-xs font-medium rounded-md border transition-colors cursor-pointer ${
+                            active
+                              ? 'bg-[#EE6F57] text-white border-[#EE6F57]'
+                              : 'bg-white text-neutral-600 border-[#E3E3E3]'
+                          }`}
+                        >
+                          {dept}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-medium text-neutral-700 mb-1">
+                    Inquiry Notes
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={triageInquiryNotes}
+                    onChange={(e) => setTriageInquiryNotes(e.target.value)}
+                    className="w-full px-3 py-1.5 text-xs bg-white border border-[#E3E3E3] rounded-md focus:outline-none focus:border-[#CB3737]"
+                  />
+                </div>
+
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setEditingTriage(false)}
+                    className="px-3 py-1.5 text-xs font-medium text-neutral-600 bg-white border border-[#E3E3E3] rounded-md hover:bg-neutral-50 cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSaveTriageEdit}
+                    className="px-3.5 py-1.5 text-xs font-semibold text-white bg-[#CB3737] hover:bg-[#B02D2D] rounded-md transition-colors cursor-pointer"
+                  >
+                    Save Triage Changes
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <p className="text-sm text-neutral-700 leading-relaxed">
+                  {lead.inquiryNotes || 'No additional inquiry notes entered.'}
+                </p>
+                <div className="flex flex-wrap items-center gap-2 text-xs text-neutral-500">
+                  <span>
+                    Assigned PIC: <strong className="text-neutral-800">{lead.assignedPicName}</strong>
+                  </span>
                   <span aria-hidden="true">·</span>
-                  <span>Secondary: {lead.secondaryDepts.join(', ')}</span>
-                </>
-              )}
-            </div>
+                  <span>
+                    Target Dept:{' '}
+                    <strong className="text-neutral-800">
+                      {DEPARTMENT_FULL_NAMES[lead.targetDept]}
+                    </strong>
+                  </span>
+                  {lead.secondaryDepts.length > 0 && (
+                    <>
+                      <span aria-hidden="true">·</span>
+                      <span>Secondary: {lead.secondaryDepts.join(', ')}</span>
+                    </>
+                  )}
+                </div>
+              </>
+            )}
           </section>
 
           <hr className="border-[#E3E3E3]" />
 
-          {/* Step 2 & 3: PIC Lead Contact Log & 4-Working-Day SLA Tracker */}
+          {/* Step 2 & 3: PIC Lead Contact Log & 4-Working-Day SLA Tracker ([Edit] Button Enabled) */}
           <section className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <h3 className="text-sm font-semibold text-[#171717]">
-                02. PIC Contact Log &amp; 4-Working-Day SLA Tracker (Steps 2–3)
-              </h3>
+              <div className="flex items-center gap-2.5">
+                <h3 className="text-sm font-semibold text-[#171717]">
+                  02. PIC Contact Log &amp; 4-Working-Day SLA Tracker (Steps 2–3)
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (editingContact) {
+                      setContactStatus(lead.contactStatus);
+                      setFirstContactLocal(toLocalDateTimeInput(lead.firstContactAt));
+                      setOutreachChannel(lead.outreachChannel || 'Phone');
+                      setOutreachNotes(lead.outreachNotes || '');
+                    }
+                    setEditingContact((v) => !v);
+                  }}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-[#CB3737] bg-[#CB3737]/5 hover:bg-[#CB3737]/10 border border-[#CB3737]/25 rounded-md transition-colors cursor-pointer"
+                >
+                  <Pencil className="w-3 h-3" />
+                  {editingContact ? 'Cancel' : 'Edit'}
+                </button>
+              </div>
               {lead.firstContactAt && (
                 <span className="text-xs font-mono tabular-nums text-emerald-700 font-medium">
                   first_contact_at: {formatDateTime(lead.firstContactAt)}
@@ -345,60 +647,121 @@ export function LeadDetailDrawer({
               )}
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-medium text-neutral-700 mb-1">
-                  Contact Status
-                </label>
-                <select
-                  value={contactStatus}
-                  onChange={(e) => setContactStatus(e.target.value as ContactStatus)}
-                  className="w-full px-3 py-2 text-sm bg-white border border-[#E3E3E3] rounded-lg focus:outline-none focus:border-[#CB3737]"
-                >
-                  <option value="Pending Contact">Pending Contact</option>
-                  <option value="Contacted">Contacted (Freeze SLA Timer)</option>
-                  <option value="Unreachable">Unreachable</option>
-                </select>
+            {!editingContact ? (
+              <div className="p-4 bg-[#FAFAFA] border border-[#E3E3E3] rounded-lg space-y-2 text-xs">
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                  <span>
+                    Status:{' '}
+                    <strong
+                      className={
+                        lead.contactStatus === 'Contacted'
+                          ? 'text-emerald-700'
+                          : lead.contactStatus === 'Unreachable'
+                            ? 'text-neutral-600'
+                            : 'text-[#EE6F57]'
+                      }
+                    >
+                      {lead.contactStatus}
+                    </strong>
+                  </span>
+                  <span>
+                    Channel: <strong className="text-neutral-800">{lead.outreachChannel || 'Not logged yet'}</strong>
+                  </span>
+                  <span>
+                    SLA Clock:{' '}
+                    <strong className={sla.isBreached ? 'text-[#CB3737]' : 'text-neutral-800'}>
+                      {sla.label}
+                    </strong>
+                  </span>
+                </div>
+                <p className="text-neutral-600">
+                  {lead.outreachNotes || 'Click Edit to log PIC outreach status, first_contact_at timestamp, or follow-up notes.'}
+                </p>
               </div>
+            ) : (
+              <div className="p-4 bg-[#FAFAFA] border border-[#E3E3E3] rounded-lg space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-medium text-neutral-700 mb-1">
+                      Contact Status
+                    </label>
+                    <select
+                      value={contactStatus}
+                      onChange={(e) => {
+                        const next = e.target.value as ContactStatus;
+                        setContactStatus(next);
+                        if (next === 'Contacted' && !firstContactLocal) {
+                          setFirstContactLocal(toLocalDateTimeInput(new Date().toISOString()));
+                        }
+                      }}
+                      className="w-full px-3 py-2 text-sm bg-white border border-[#E3E3E3] rounded-lg focus:outline-none focus:border-[#CB3737]"
+                    >
+                      <option value="Pending Contact">Pending Contact</option>
+                      <option value="Contacted">Contacted (Freeze SLA Timer)</option>
+                      <option value="Unreachable">Unreachable</option>
+                    </select>
+                  </div>
 
-              <div>
-                <label className="block text-xs font-medium text-neutral-700 mb-1">
-                  Outreach Channel
-                </label>
-                <select
-                  value={outreachChannel}
-                  onChange={(e) => setOutreachChannel(e.target.value as OutreachChannel)}
-                  className="w-full px-3 py-2 text-sm bg-white border border-[#E3E3E3] rounded-lg focus:outline-none focus:border-[#CB3737]"
-                >
-                  <option value="Phone">Phone Call</option>
-                  <option value="WhatsApp">WhatsApp</option>
-                  <option value="Email">Email</option>
-                </select>
+                  <div>
+                    <label className="block text-xs font-medium text-neutral-700 mb-1">
+                      Outreach Channel
+                    </label>
+                    <select
+                      value={outreachChannel}
+                      onChange={(e) => setOutreachChannel(e.target.value as OutreachChannel)}
+                      className="w-full px-3 py-2 text-sm bg-white border border-[#E3E3E3] rounded-lg focus:outline-none focus:border-[#CB3737]"
+                    >
+                      <option value="Phone">Phone Call</option>
+                      <option value="WhatsApp">WhatsApp</option>
+                      <option value="Email">Email</option>
+                    </select>
+                  </div>
+
+                  <div className="sm:col-span-2">
+                    <label className="block text-xs font-medium text-neutral-700 mb-1">
+                      First Contact Timestamp (`first_contact_at`) — Freezes 4-Day SLA Clock
+                    </label>
+                    <input
+                      type="datetime-local"
+                      value={firstContactLocal}
+                      disabled={contactStatus === 'Pending Contact'}
+                      onChange={(e) => setFirstContactLocal(e.target.value)}
+                      className="w-full px-3 py-2 text-xs font-mono tabular-nums bg-white border border-[#E3E3E3] rounded-lg focus:outline-none focus:border-[#CB3737] disabled:bg-neutral-100 disabled:text-neutral-400"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-neutral-700 mb-1">
+                    PIC Outreach &amp; Follow-up Notes
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={outreachNotes}
+                    onChange={(e) => setOutreachNotes(e.target.value)}
+                    placeholder="Log call outcome, prospect availability, or follow-up date..."
+                    className="w-full px-3 py-2 text-sm bg-white border border-[#E3E3E3] rounded-lg focus:outline-none focus:border-[#CB3737]"
+                  />
+                </div>
+
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setEditingContact(false)}
+                    className="px-3.5 py-2 text-xs font-medium text-neutral-600 bg-white border border-[#E3E3E3] rounded-lg hover:bg-neutral-50 cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSaveOutreachClick}
+                    className="px-4 py-2 text-xs font-semibold text-white bg-[#CB3737] hover:bg-[#B02D2D] rounded-lg transition-colors cursor-pointer"
+                  >
+                    Save Contact Status
+                  </button>
+                </div>
               </div>
-            </div>
-
-            <div>
-              <label className="block text-xs font-medium text-neutral-700 mb-1">
-                PIC Outreach Notes
-              </label>
-              <textarea
-                rows={2}
-                value={outreachNotes}
-                onChange={(e) => setOutreachNotes(e.target.value)}
-                placeholder="Log call outcome, prospect availability, or follow-up date..."
-                className="w-full px-3 py-2 text-sm bg-white border border-[#E3E3E3] rounded-lg focus:outline-none focus:border-[#CB3737]"
-              />
-            </div>
-
-            <div className="flex justify-end">
-              <button
-                type="button"
-                onClick={handleSaveOutreachClick}
-                className="px-4 py-2 text-xs font-semibold text-white bg-[#CB3737] hover:bg-[#B02D2D] rounded-lg transition-colors cursor-pointer"
-              >
-                Save Contact Status
-              </button>
-            </div>
+            )}
           </section>
 
           <hr className="border-[#E3E3E3]" />

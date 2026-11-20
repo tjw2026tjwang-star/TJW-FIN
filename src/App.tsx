@@ -55,7 +55,7 @@ import {
 import { BrandLogo } from './components/BrandLogo';
 import { SessionGate } from './components/SessionGate';
 import { InboundTriageModal, type NewLeadInput } from './components/InboundTriageModal';
-import { LeadDetailDrawer } from './components/LeadDetailDrawer';
+import { LeadDetailDrawer, type EditLeadTriagePayload } from './components/LeadDetailDrawer';
 import { QuotationWorkbench } from './components/QuotationWorkbench';
 import { AuditLogView } from './components/AuditLogView';
 import { AssistantWorkbench } from './components/AssistantWorkbench';
@@ -75,6 +75,7 @@ export default function App() {
 
   const [triageModalOpen, setTriageModalOpen] = useState(false);
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
+  const [drawerOpenInTriageEdit, setDrawerOpenInTriageEdit] = useState(false);
   const [selectedQuotationId, setSelectedQuotationId] = useState<string | null>(null);
 
   // Persist reactively to LocalStorage
@@ -278,7 +279,84 @@ export default function App() {
       `Triaged ${newLead.companyName} (${newLead.entityType}) to ${newLead.targetDept} (PIC: ${newLead.assignedPicName}). 4-working-day SLA clock initiated.`
     );
     setActiveScreen('leads');
+    setDrawerOpenInTriageEdit(false);
     setSelectedLeadId(newLead.id);
+  };
+
+  // Step 1: Edit Existing Lead Triage Record (EDIT_LEAD_TRIAGE)
+  const handleEditLeadTriage = (leadId: string, payload: EditLeadTriagePayload) => {
+    if (!session) return;
+    const existing = leads.find((l) => l.id === leadId);
+    if (!existing) return;
+    const nowIso = new Date().toISOString();
+
+    const changes: string[] = [];
+    if (existing.companyName !== payload.companyName) {
+      changes.push(`Company: "${existing.companyName}" -> "${payload.companyName}"`);
+    }
+    if (existing.contactPerson !== payload.contactPerson) {
+      changes.push(`Contact: "${existing.contactPerson}" -> "${payload.contactPerson}"`);
+    }
+    if (existing.entityType !== payload.entityType) {
+      changes.push(`Entity: "${existing.entityType}" -> "${payload.entityType}"`);
+    }
+    if (existing.targetDept !== payload.targetDept) {
+      changes.push(`Dept: "${existing.targetDept}" -> "${payload.targetDept}"`);
+    }
+    if (existing.assignedPicName !== payload.assignedPicName) {
+      changes.push(`PIC: "${existing.assignedPicName}" -> "${payload.assignedPicName}"`);
+    }
+    if (existing.contactPhone !== payload.contactPhone) {
+      changes.push(`Phone updated`);
+    }
+    if (existing.contactEmail !== payload.contactEmail) {
+      changes.push(`Email updated`);
+    }
+    if (existing.inquiryNotes !== payload.inquiryNotes) {
+      changes.push(`Inquiry notes updated`);
+    }
+
+    setLeads((prev) =>
+      prev.map((l) =>
+        l.id === leadId
+          ? {
+              ...l,
+              companyName: payload.companyName,
+              contactPerson: payload.contactPerson,
+              contactPhone: payload.contactPhone,
+              contactEmail: payload.contactEmail,
+              entityType: payload.entityType,
+              targetDept: payload.targetDept,
+              secondaryDepts: payload.secondaryDepts,
+              assignedPicName: payload.assignedPicName,
+              inquiryNotes: payload.inquiryNotes,
+              updatedAt: nowIso,
+            }
+          : l
+      )
+    );
+
+    // Sync updated companyName / targetDept to any non-dispatched linked quotation
+    setQuotations((prev) =>
+      prev.map((q) =>
+        q.leadId === leadId && q.status !== 'Dispatched'
+          ? {
+              ...q,
+              companyName: payload.companyName,
+              targetDept: payload.targetDept,
+              updatedAt: nowIso,
+            }
+          : q
+      )
+    );
+
+    appendAudit(
+      session,
+      'Leads Pipeline',
+      'EDIT_LEAD_TRIAGE',
+      existing.leadCode,
+      `Edited Step 1 triage record (${changes.length > 0 ? changes.join('; ') : 'Confirmed triage fields'}).`
+    );
   };
 
   // Import from Unified 6-Service-Line Intelligence Assistant (Step 1 Lead Only)
@@ -381,14 +459,8 @@ export default function App() {
 
     const totals = computeQuotationTotals(lineItems);
     const quoteNumber = generateQuoteNumber(quotations.length);
-    const validityDays =
-      result.quotation.validity_days && result.quotation.validity_days > 0
-        ? Math.floor(result.quotation.validity_days)
-        : DEFAULT_VALIDITY_DAYS;
-    const validUntil =
-      result.quotation.valid_until && /^\d{4}-\d{2}-\d{2}$/.test(result.quotation.valid_until)
-        ? result.quotation.valid_until
-        : computeValidUntilDate(nowIso, validityDays);
+    const validityDays = DEFAULT_VALIDITY_DAYS;
+    const validUntil = computeValidUntilDate(nowIso, validityDays);
 
     const newQuotation: Quotation = {
       id: generateSafeId('qt'),
@@ -438,11 +510,12 @@ export default function App() {
     setActiveScreen('quotations');
   };
 
-  // Steps 2 & 3: Update PIC Contact Status & Freeze SLA Timer on Contacted
+  // Steps 2 & 3: Edit PIC Contact Status & first_contact_at (Freeze SLA Timer on Contacted)
   const handleUpdateOutreach = (
     leadId: string,
     payload: {
       contactStatus: ContactStatus;
+      firstContactAt: string;
       outreachChannel: OutreachChannel;
       outreachNotes: string;
     }
@@ -454,8 +527,10 @@ export default function App() {
 
     const firstContactAt =
       payload.contactStatus === 'Contacted'
-        ? targetLead.firstContactAt || nowIso
-        : targetLead.firstContactAt;
+        ? payload.firstContactAt || targetLead.firstContactAt || nowIso
+        : payload.contactStatus === 'Pending Contact'
+          ? ''
+          : payload.firstContactAt || targetLead.firstContactAt;
 
     const nextStage: WorkflowStage =
       payload.contactStatus === 'Contacted'
@@ -483,9 +558,9 @@ export default function App() {
     appendAudit(
       session,
       'Leads Pipeline',
-      'UPDATE_CONTACT_STATUS',
+      'EDIT_CONTACT_STATUS',
       targetLead.leadCode,
-      `Contact status changed: "${targetLead.contactStatus}" -> "${payload.contactStatus}" via ${payload.outreachChannel || 'Direct'} for ${targetLead.companyName}. SLA status: ${sla.label}.`
+      `Edited contact record for ${targetLead.companyName}: status "${targetLead.contactStatus}" -> "${payload.contactStatus}", channel "${payload.outreachChannel || 'Direct'}", first_contact_at "${firstContactAt || '—'}". SLA: ${sla.label}.`
     );
   };
 
@@ -623,7 +698,7 @@ export default function App() {
     setActiveScreen('quotations');
   };
 
-  // Step 6 Edit Line Items (Locked once Dispatched)
+  // Step 6 Edit Draft Line Items (Locked once Approved or Dispatched)
   const handleUpdateQuotationContent = (
     quotationId: string,
     payload: {
@@ -635,7 +710,7 @@ export default function App() {
   ) => {
     if (!session) return;
     const existing = quotations.find((q) => q.id === quotationId);
-    if (!existing || existing.status === 'Dispatched') return;
+    if (!existing || existing.isApproved || existing.status === 'Dispatched') return;
 
     const nowIso = new Date().toISOString();
     const totals = computeQuotationTotals(payload.lineItems);
@@ -659,9 +734,9 @@ export default function App() {
     appendAudit(
       session,
       'Quotation Workbench',
-      'GENERATE_QUOTATION',
+      'EDIT_QUOTATION_DRAFT',
       existing.quoteNumber,
-      `Revised line items for ${existing.companyName}: Year-1 ${formatMyr(existing.totalYearOneMyr)} -> ${formatMyr(totals.totalYearOneMyr)} (${payload.lineItems.length} items).`
+      `Edited draft quotation for ${existing.companyName}: Year-1 ${formatMyr(existing.totalYearOneMyr)} -> ${formatMyr(totals.totalYearOneMyr)} (${existing.lineItems.length} -> ${payload.lineItems.length} items).`
     );
   };
 
@@ -1278,16 +1353,30 @@ export default function App() {
                               )}
                             </td>
                             <td className="py-3.5 px-5 text-right whitespace-nowrap">
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setSelectedLeadId(lead.id);
-                                }}
-                                className="px-3 py-1.5 text-xs font-medium text-[#171717] bg-white border border-[#E3E3E3] rounded-md hover:border-[#CB3737] hover:text-[#CB3737] transition-colors cursor-pointer"
-                              >
-                                Manage
-                              </button>
+                              <div className="inline-flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setDrawerOpenInTriageEdit(true);
+                                    setSelectedLeadId(lead.id);
+                                  }}
+                                  className="px-2.5 py-1.5 text-xs font-medium text-[#CB3737] bg-[#CB3737]/5 border border-[#CB3737]/25 rounded-md hover:bg-[#CB3737] hover:text-white transition-colors cursor-pointer"
+                                >
+                                  Edit
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setDrawerOpenInTriageEdit(false);
+                                    setSelectedLeadId(lead.id);
+                                  }}
+                                  className="px-3 py-1.5 text-xs font-medium text-[#171717] bg-white border border-[#E3E3E3] rounded-md hover:border-[#CB3737] hover:text-[#CB3737] transition-colors cursor-pointer"
+                                >
+                                  Manage
+                                </button>
+                              </div>
                             </td>
                           </tr>
                         );
@@ -1347,17 +1436,23 @@ export default function App() {
         onCreateLead={handleCreateLead}
       />
 
-      {/* Steps 2-6 Lead Detail Workspace Drawer */}
+      {/* Steps 1-6 Lead Detail Workspace Drawer */}
       <LeadDetailDrawer
         lead={selectedLead}
         linkedQuotation={selectedLead ? quotationByLeadId[selectedLead.id] : undefined}
-        onClose={() => setSelectedLeadId(null)}
+        initialEditTriage={drawerOpenInTriageEdit}
+        onClose={() => {
+          setSelectedLeadId(null);
+          setDrawerOpenInTriageEdit(false);
+        }}
+        onEditLeadTriage={handleEditLeadTriage}
         onUpdateOutreach={handleUpdateOutreach}
         onLogSlaReminder={handleLogSlaReminder}
         onSaveScope={handleSaveScope}
         onGenerateQuotation={handleGenerateQuotation}
         onOpenQuotation={(quotationId) => {
           setSelectedLeadId(null);
+          setDrawerOpenInTriageEdit(false);
           setSelectedQuotationId(quotationId);
           setActiveScreen('quotations');
         }}
