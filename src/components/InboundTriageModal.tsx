@@ -104,6 +104,7 @@ export function InboundTriageModal({
         if (lower.includes('aud')) return 'Audit';
         if (lower.includes('tax')) return 'Tax';
         if (lower.includes('pay')) return 'Payroll';
+        if (lower.includes('fin') || lower.includes('fp&a') || lower.includes('advis')) return 'Finance';
         return session.department;
       };
 

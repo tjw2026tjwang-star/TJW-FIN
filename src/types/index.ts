@@ -1,8 +1,17 @@
 export type UserRole = 'Administrator' | 'User';
 
-export type Department = 'Co Sec' | 'Accounting' | 'Audit' | 'Tax' | 'Payroll';
+export type Department = 'Co Sec' | 'Accounting' | 'Audit' | 'Tax' | 'Payroll' | 'Finance';
 
-export type EntityType = 'Sdn Bhd' | 'Enterprise' | 'LLP' | 'Sole Prop' | 'Bhd' | 'Other';
+export type EntityType =
+  | 'Sdn Bhd'
+  | 'Enterprise'
+  | 'LLP'
+  | 'Unknown'
+  | 'Sole Prop'
+  | 'Bhd'
+  | 'Other';
+
+export type FinanceEngagementMode = 'Retainer' | 'Project';
 
 export type ContactStatus = 'Pending Contact' | 'Contacted' | 'Unreachable';
 
@@ -48,6 +57,7 @@ export const DEPARTMENTS: Department[] = [
   'Audit',
   'Tax',
   'Payroll',
+  'Finance',
 ];
 
 export const DEPARTMENT_FULL_NAMES: Record<Department, string> = {
@@ -56,12 +66,14 @@ export const DEPARTMENT_FULL_NAMES: Record<Department, string> = {
   Audit: 'Statutory Audit',
   Tax: 'Corporate & Personal Tax',
   Payroll: 'Payroll Processing',
+  Finance: 'Finance Advisory & FP&A',
 };
 
 export const ENTITY_TYPES: EntityType[] = [
   'Sdn Bhd',
   'Enterprise',
   'LLP',
+  'Unknown',
   'Sole Prop',
   'Bhd',
   'Other',
@@ -100,10 +112,43 @@ export interface LeadScope {
   headcount: number;
   sstRegistered: boolean;
   requiresIncorporation: boolean;
+  financeEngagementMode?: FinanceEngagementMode;
   accountingState: AccountingState;
   requestedServices: Department[];
   scopeNotes: string;
   updatedAt: string;
+}
+
+export interface AssistantLineItem {
+  dept: Department;
+  service_title: string;
+  scope_summary: string;
+  billing_cycle: 'One-off' | 'Monthly' | 'Annually';
+  rate_myr: number;
+}
+
+export interface AssistantResponse {
+  mode: 'LEAD_TRIAGE' | 'QUOTATION_GENERATION';
+  lead_profile: {
+    company_name: string;
+    contact_person: string;
+    contact_phone: string;
+    contact_email: string;
+    entity_type: 'Sdn Bhd' | 'Enterprise' | 'LLP' | 'Unknown';
+  };
+  routing: {
+    primary_dept: Department;
+    secondary_depts: Department[];
+    sla_days_limit: number;
+    routing_reason: string;
+  };
+  quotation: {
+    line_items: AssistantLineItem[];
+    total_setup_fee_myr: number;
+    total_monthly_recurring_myr: number;
+    total_annual_recurring_myr: number;
+  };
+  client_reply_draft: string;
 }
 
 export interface Lead {

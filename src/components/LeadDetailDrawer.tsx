@@ -16,6 +16,7 @@ import {
   type AccountingState,
   type ContactStatus,
   type Department,
+  type FinanceEngagementMode,
   type Lead,
   type LeadScope,
   type OutreachChannel,
@@ -77,6 +78,8 @@ export function LeadDetailDrawer({
   const [headcount, setHeadcount] = useState('');
   const [sstRegistered, setSstRegistered] = useState(false);
   const [requiresIncorporation, setRequiresIncorporation] = useState(false);
+  const [financeEngagementMode, setFinanceEngagementMode] =
+    useState<FinanceEngagementMode>('Retainer');
   const [accountingState, setAccountingState] = useState<AccountingState>('Up-to-date');
   const [requestedServices, setRequestedServices] = useState<Department[]>([]);
   const [scopeNotes, setScopeNotes] = useState('');
@@ -98,6 +101,7 @@ export function LeadDetailDrawer({
     setHeadcount(lead.scope.headcount ? String(lead.scope.headcount) : '');
     setSstRegistered(Boolean(lead.scope.sstRegistered));
     setRequiresIncorporation(Boolean(lead.scope.requiresIncorporation));
+    setFinanceEngagementMode(lead.scope.financeEngagementMode || 'Retainer');
     setAccountingState(lead.scope.accountingState || 'Up-to-date');
     setRequestedServices(
       lead.scope.requestedServices.length > 0
@@ -139,6 +143,7 @@ export function LeadDetailDrawer({
       headcount: Math.max(0, Math.floor(Number(headcount) || 0)),
       sstRegistered,
       requiresIncorporation,
+      financeEngagementMode,
       accountingState,
       requestedServices: requestedServices.length > 0 ? requestedServices : [lead.targetDept],
       scopeNotes: scopeNotes.trim(),
@@ -544,6 +549,44 @@ export function LeadDetailDrawer({
                   </div>
                 </div>
 
+                {requestedServices.includes('Finance') && (
+                  <div className="p-3.5 bg-[#FAFAFA] border border-[#E3E3E3] rounded-lg space-y-2">
+                    <span className="block text-xs font-medium text-neutral-700">
+                      Finance Advisory / FP&amp;A Engagement Structure
+                    </span>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {(
+                        [
+                          {
+                            id: 'Retainer',
+                            label: 'Monthly Retainer (RM 800 – RM 3,000/mo)',
+                            desc: 'Ongoing FP&A, cash flow forecasting & budgeting',
+                          },
+                          {
+                            id: 'Project',
+                            label: 'One-off Project (RM 2,000 – RM 5,000)',
+                            desc: 'Financial modeling or bank credit facility pack',
+                          },
+                        ] as const
+                      ).map((opt) => (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => setFinanceEngagementMode(opt.id)}
+                          className={`p-2.5 text-left rounded-md border transition-colors cursor-pointer ${
+                            financeEngagementMode === opt.id
+                              ? 'border-[#CB3737] bg-white text-[#171717]'
+                              : 'border-[#E3E3E3] bg-white/60 text-neutral-600'
+                          }`}
+                        >
+                          <p className="text-xs font-semibold">{opt.label}</p>
+                          <p className="text-[11px] text-neutral-500 mt-0.5">{opt.desc}</p>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 <div>
                   <label className="block text-xs font-medium text-neutral-700 mb-1">
                     Confirmed Client Scope Specifications
@@ -552,7 +595,7 @@ export function LeadDetailDrawer({
                     rows={3}
                     value={scopeNotes}
                     onChange={(e) => setScopeNotes(e.target.value)}
-                    placeholder="Document exact filing periods, financial year-end, backlog months, or payroll cutoffs..."
+                    placeholder="Document exact filing periods, financial year-end, backlog months, payroll cutoffs, or FP&A / credit facility advisory deliverables..."
                     className="w-full px-3 py-2 text-sm bg-white border border-[#E3E3E3] rounded-lg focus:outline-none focus:border-[#CB3737]"
                   />
                 </div>

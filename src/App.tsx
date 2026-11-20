@@ -7,8 +7,10 @@ import {
 } from 'lucide-react';
 import {
   DEPARTMENTS,
+  type AssistantResponse,
   type AuditAction,
   type AuditEntry,
+  type BillingFrequency,
   type ContactStatus,
   type Department,
   type DispatchChannel,
@@ -51,8 +53,9 @@ import { InboundTriageModal, type NewLeadInput } from './components/InboundTriag
 import { LeadDetailDrawer } from './components/LeadDetailDrawer';
 import { QuotationWorkbench } from './components/QuotationWorkbench';
 import { AuditLogView } from './components/AuditLogView';
+import { AssistantWorkbench } from './components/AssistantWorkbench';
 
-type ActiveScreen = 'leads' | 'quotations' | 'audit';
+type ActiveScreen = 'leads' | 'quotations' | 'assistant' | 'audit';
 
 export default function App() {
   const [session, setSession] = useState<UserSession | null>(() => loadSession());
@@ -173,6 +176,150 @@ export default function App() {
     );
     setActiveScreen('leads');
     setSelectedLeadId(newLead.id);
+  };
+
+  // Import from Unified 6-Service-Line Intelligence Assistant (Step 1 Lead Only)
+  const handleImportLeadFromAssistant = (result: AssistantResponse, rawInput: string) => {
+    if (!session) return;
+    const primary = DEPARTMENTS.includes(result.routing.primary_dept)
+      ? result.routing.primary_dept
+      : session.department;
+    const secondaries = (result.routing.secondary_depts || []).filter(
+      (d): d is Department => DEPARTMENTS.includes(d) && d !== primary
+    );
+
+    handleCreateLead({
+      companyName: result.lead_profile.company_name || 'Prospective Client',
+      contactPerson: result.lead_profile.contact_person || 'Prospective Contact',
+      contactPhone: result.lead_profile.contact_phone || '',
+      contactEmail: result.lead_profile.contact_email || '',
+      entityType: result.lead_profile.entity_type || 'Unknown',
+      inquiryNotes: `${result.routing.routing_reason}\n\nSource Notes:\n${rawInput}`,
+      targetDept: primary,
+      secondaryDepts: Array.from(new Set(secondaries)),
+      assignedPicName: session.name,
+      receivedAt: new Date().toISOString(),
+    });
+  };
+
+  // Import from Unified 6-Service-Line Intelligence Assistant (Lead + Step 6 Quotation -> Pending Approval)
+  const handleImportLeadAndQuotationFromAssistant = (
+    result: AssistantResponse,
+    rawInput: string
+  ) => {
+    if (!session) return;
+    const nowIso = new Date().toISOString();
+    const primary = DEPARTMENTS.includes(result.routing.primary_dept)
+      ? result.routing.primary_dept
+      : session.department;
+    const secondaries = (result.routing.secondary_depts || []).filter(
+      (d): d is Department => DEPARTMENTS.includes(d) && d !== primary
+    );
+    const requestedServices = Array.from(new Set([primary, ...secondaries]));
+
+    const leadCode = generateLeadCode(leads.length);
+    const newLead: Lead = {
+      id: generateSafeId('lead'),
+      leadCode,
+      companyName: result.lead_profile.company_name || 'Prospective Client',
+      contactPerson: result.lead_profile.contact_person || 'Prospective Contact',
+      contactPhone: result.lead_profile.contact_phone || '',
+      contactEmail: result.lead_profile.contact_email || '',
+      entityType: result.lead_profile.entity_type || 'Unknown',
+      inquiryNotes: result.routing.routing_reason || rawInput,
+      targetDept: primary,
+      secondaryDepts: secondaries,
+      assignedPicName: session.name,
+      receivedAt: nowIso,
+      contactStatus: 'Contacted',
+      firstContactAt: nowIso,
+      outreachChannel: 'Email',
+      outreachNotes: 'Scope confirmed and imported via Intelligence Assistant.',
+      escalationRemindersSent: 0,
+      lastReminderAt: '',
+      scope: {
+        completed: true,
+        turnoverTier: '',
+        annualTurnoverMyr: 0,
+        monthlyTransactionVolume: 0,
+        headcount: 0,
+        sstRegistered: false,
+        requiresIncorporation: false,
+        accountingState: '',
+        requestedServices,
+        scopeNotes: rawInput,
+        updatedAt: nowIso,
+      },
+      workflowStage: 'Approval',
+      createdByName: session.name,
+      updatedAt: nowIso,
+    };
+
+    const mapCycle = (cycle: string): BillingFrequency => {
+      if (cycle === 'Monthly') return 'Monthly';
+      if (cycle === 'Annually' || cycle === 'Annual') return 'Annual';
+      return 'One-off';
+    };
+
+    const lineItems: QuotationLineItem[] = result.quotation.line_items.map((item) => {
+      const rate = Math.max(0, Math.round((Number(item.rate_myr) || 0) * 100) / 100);
+      const dept = DEPARTMENTS.includes(item.dept) ? item.dept : primary;
+      return {
+        id: generateSafeId('li'),
+        dept,
+        description: item.service_title,
+        deliverables: item.scope_summary,
+        frequency: mapCycle(item.billing_cycle),
+        quantity: 1,
+        unitPriceMyr: rate,
+        lineTotalMyr: rate,
+      };
+    });
+
+    const totals = computeQuotationTotals(lineItems);
+    const quoteNumber = generateQuoteNumber(quotations.length);
+
+    const newQuotation: Quotation = {
+      id: generateSafeId('qt'),
+      quoteNumber,
+      leadId: newLead.id,
+      companyName: newLead.companyName,
+      targetDept: primary,
+      lineItems,
+      ...totals,
+      legalRemarks: DEFAULT_LEGAL_REMARKS,
+      assumptions: DEFAULT_ASSUMPTIONS,
+      exclusions: DEFAULT_EXCLUSIONS,
+      status: 'Pending Approval',
+      isApproved: false,
+      approvedBy: '',
+      approvedAt: '',
+      dispatchChannel: '',
+      dispatchedAt: '',
+      dispatchedBy: '',
+      createdByName: session.name,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+
+    setLeads((prev) => [newLead, ...prev]);
+    setQuotations((prev) => [newQuotation, ...prev]);
+
+    appendAudit(
+      session,
+      'LEAD_CREATED',
+      `${leadCode} · ${newLead.companyName}`,
+      `Imported scoped lead via Intelligence Assistant (Primary: ${primary}).`
+    );
+    appendAudit(
+      session,
+      'QUOTATION_GENERATED',
+      `${quoteNumber} · ${newLead.companyName}`,
+      `Imported AI-calculated quotation (${lineItems.length} items, Year-1 ${formatMyr(totals.totalYearOneMyr)}) into Pending Approval queue.`
+    );
+
+    setSelectedQuotationId(newQuotation.id);
+    setActiveScreen('quotations');
   };
 
   // Steps 2 & 3: Update PIC Contact Status & Freeze SLA Timer on Contacted
@@ -561,6 +708,7 @@ export default function App() {
                 [
                   { id: 'leads', label: 'Leads Pipeline', count: deptScopedLeads.length },
                   { id: 'quotations', label: 'Quotations', count: deptScopedQuotations.length },
+                  { id: 'assistant', label: 'AI Assistant', count: null },
                   { id: 'audit', label: 'Audit Log', count: auditEntries.length },
                 ] as const
               ).map((tab) => {
@@ -577,9 +725,11 @@ export default function App() {
                     }`}
                   >
                     <span>{tab.label}</span>
-                    <span className="font-mono text-xs tabular-nums text-neutral-400">
-                      {tab.count}
-                    </span>
+                    {tab.count !== null && (
+                      <span className="font-mono text-xs tabular-nums text-neutral-400">
+                        {tab.count}
+                      </span>
+                    )}
                   </button>
                 );
               })}
@@ -649,6 +799,7 @@ export default function App() {
               [
                 { id: 'leads', label: 'Leads' },
                 { id: 'quotations', label: 'Quotations' },
+                { id: 'assistant', label: 'AI Assistant' },
                 { id: 'audit', label: 'Audit' },
               ] as const
             ).map((tab) => (
@@ -687,11 +838,13 @@ export default function App() {
                 ? 'Leads Workbench & 4-Day SLA Pipeline'
                 : activeScreen === 'quotations'
                   ? 'Quotation Workbench & Approval Gate'
-                  : 'Audit & Activity Log'}
+                  : activeScreen === 'assistant'
+                    ? 'Lead Triage & Quotation Intelligence Assistant'
+                    : 'Audit & Activity Log'}
             </h1>
             <p className="text-xs text-neutral-500 mt-1">
               T.J. Wang Finance Department ·{' '}
-              {activeDeptFilter === 'ALL' ? 'All 5 Service Lines' : `${activeDeptFilter} View`} ·
+              {activeDeptFilter === 'ALL' ? 'All 6 Service Lines' : `${activeDeptFilter} View`} ·
               Local Browser Storage (Zero-Cost)
             </p>
           </div>
@@ -831,7 +984,7 @@ export default function App() {
                     </p>
                     <p className="text-xs text-neutral-500 max-w-md mx-auto leading-relaxed">
                       Start the 8-step T.J. Wang Finance Department workflow by triaging your first
-                      client inquiry across Co Sec, Accounting, Audit, Tax, or Payroll.
+                      client inquiry across Co Sec, Accounting, Audit, Tax, Payroll, or Finance.
                     </p>
                   </div>
                   <button
@@ -981,6 +1134,15 @@ export default function App() {
             onUpdateQuotationContent={handleUpdateQuotationContent}
             onToggleApproval={handleToggleApproval}
             onDispatchQuotation={handleDispatchQuotation}
+          />
+        )}
+
+        {/* AI INTELLIGENCE ASSISTANT (6 SERVICE LINES) */}
+        {activeScreen === 'assistant' && (
+          <AssistantWorkbench
+            session={session}
+            onImportLead={handleImportLeadFromAssistant}
+            onImportLeadAndQuotation={handleImportLeadAndQuotationFromAssistant}
           />
         )}
 

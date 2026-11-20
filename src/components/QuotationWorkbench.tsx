@@ -373,7 +373,8 @@ export function QuotationWorkbench({
                       </h3>
                       <p className="text-[11px] text-neutral-500 mt-0.5">
                         Baselines: Co Sec RM 60–120/mo · Inc RM 1.5k–2.5k · Acc RM 300–1.5k/mo ·
-                        Payroll RM 30–50/emp · Tax RM 1.2k–3.5k/yr · Audit RM 2.5k–8k+/yr
+                        Payroll RM 30–50/emp · Tax RM 1.2k–3.5k/yr · Audit RM 2.5k–8k+/yr ·
+                        Finance RM 800–3k/mo or RM 2k–5k project
                       </p>
                     </div>
                     {!isLockedFromEdit ? (

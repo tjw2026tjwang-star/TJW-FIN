@@ -14,6 +14,7 @@ import { generateSafeId } from './sla';
  * - Payroll: RM 30–RM 50/employee/mo
  * - Tax (Form C): RM 1,200–RM 3,500/yr
  * - Audit: RM 2,500–RM 8,000+/yr
+ * - Finance Advisory / Cash Flow / FP&A: RM 800–RM 3,000/mo (retainer) or RM 2,000–RM 5,000 (one-off project)
  */
 export function buildBaselineQuotationItems(lead: Lead): QuotationLineItem[] {
   const { scope, entityType } = lead;
@@ -171,6 +172,51 @@ export function buildBaselineQuotationItems(lead: Lead): QuotationLineItem[] {
       1,
       auditAnnual
     );
+  }
+
+  if (services.includes('Finance')) {
+    const isProject = scope.financeEngagementMode === 'Project';
+    if (isProject) {
+      let projectFee = 2500;
+      if (turnover >= 10000000) {
+        projectFee = 5000;
+      } else if (turnover >= 4000000) {
+        projectFee = 3800;
+      } else if (turnover >= 1500000) {
+        projectFee = 3000;
+      } else {
+        projectFee = 2000;
+      }
+      pushItem(
+        'Finance',
+        'Finance Advisory, Financial Modeling & Credit Facility Project',
+        '3-year financial model, cash flow projection, working capital review & bank loan/credit facility documentation pack',
+        'One-off',
+        1,
+        projectFee
+      );
+    } else {
+      let retainerMonthly = 1200;
+      if (turnover >= 15000000) {
+        retainerMonthly = 3000;
+      } else if (turnover >= 5000000) {
+        retainerMonthly = 2200;
+      } else if (turnover >= 2000000) {
+        retainerMonthly = 1500;
+      } else if (turnover >= 500000) {
+        retainerMonthly = 1000;
+      } else {
+        retainerMonthly = 800;
+      }
+      pushItem(
+        'Finance',
+        'Monthly FP&A, Cash Flow Forecasting & Finance Advisory Retainer',
+        'Monthly rolling cash flow forecast, budget-vs-actual variance analysis, working capital advisory & management reporting',
+        'Monthly',
+        1,
+        retainerMonthly
+      );
+    }
   }
 
   return items;

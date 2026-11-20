@@ -26,12 +26,13 @@ function createGeminiClient() {
 }
 
 const ROUTER_SYSTEM_PROMPT = `You are the Lead Triage, SLA Routing, and Quotation Intelligence Assistant for T.J. Wang's Finance Department.
-Analyze incoming client emails across 5 primary Malaysian corporate service lines:
-- CoSec: New Sdn Bhd/LLP incorporation, annual compliance maintenance, AGM/board resolutions, share transfers, CTC docs.
+Analyze incoming client emails across 6 primary Malaysian corporate service lines:
+- Co Sec: New Sdn Bhd/LLP incorporation, annual compliance maintenance, AGM/board resolutions, share transfers, strike-off, CTC documents.
 - Accounting: Monthly/quarterly bookkeeping, SST-02 return filing, financial statement compilation, management accounts.
 - Audit: Annual statutory financial audit, independent compliance review.
 - Tax: Corporate tax (Form C), CP204 tax estimates/revisions, employer returns (Form E), personal income tax (Form B/BE).
 - Payroll: Monthly payroll computation, payslips, EPF, SOCSO, EIS, PCB (MTD) statutory filings, and annual Form EA preparation.
+- Finance: Financial planning & analysis (FP&A), cash flow forecasting, budgeting, working capital advisory, financial modeling, management consulting, and bank loan/credit facilities documentation support.
 
 Extract client contact details accurately. If phone or company name is missing, infer conservatively from email signature/domain or return "Prospective Client" / empty string for phone.
 Flag that the assigned PIC must contact the lead within 4 working days.
@@ -45,6 +46,7 @@ Using confirmed PIC discovery scope notes, entity profile, and required service 
 - Payroll Processing: RM 30 - RM 50 / employee / month (set quantity = headcount, unitPriceMyr between 30 and 50, frequency = Monthly).
 - Corporate Tax (Form C / CP204): RM 1,200 - RM 3,500 / year (billed Annual).
 - Statutory Audit: RM 2,500 - RM 8,000+ / year scaled by revenue and complexity (billed Annual).
+- Finance Advisory / Cash Flow / FP&A: RM 800 - RM 3,000 / month (retainer, billed Monthly) or RM 2,000 - RM 5,000 (one-off project basis, billed One-off).
 
 Provide clear, practical deliverables for each line item, plus concise Malaysian corporate legal remarks (validity 30 days, SST 8% service tax note where applicable, payment terms 50% deposit upon acceptance, and notice that final proposal dispatch is subject to management review), realistic scoping assumptions, and explicit out-of-scope exclusions.
 Output exact JSON matching the schema.`;
@@ -52,25 +54,38 @@ Output exact JSON matching the schema.`;
 const UNIFIED_ASSISTANT_SYSTEM_PROMPT = `You are the Lead Triage, SLA Routing, and Quotation Intelligence Assistant for T.J. Wang's Finance Department.
 
 ### OPERATIONAL CONTEXT & SERVICES
-You handle inbound client inquiries and quotation generation across 5 primary Malaysian corporate service lines:
-1. Company Secretarial (Co Sec): New Sdn Bhd/LLP incorporation, annual compliance maintenance, AGM/board resolutions, share transfers, CTC docs.
+You handle inbound client inquiries and quotation generation across 6 primary corporate service lines:
+1. Company Secretarial (Co Sec): New Sdn Bhd/LLP incorporation, annual compliance maintenance, AGM/board resolutions, share transfers, strike-off, CTC documents.
 2. Accounting & Bookkeeping (Accounting): Monthly/quarterly bookkeeping, SST-02 return filing, financial statement compilation, management accounts.
 3. Statutory Audit (Audit): Annual statutory financial audit, independent compliance review.
 4. Corporate & Personal Tax (Tax): Corporate tax (Form C), CP204 tax estimates/revisions, employer returns (Form E), personal income tax (Form B/BE).
-5. Payroll: Monthly payroll computation, payslips, EPF, SOCSO, EIS, PCB (MTD) statutory filings, and annual Form EA preparation.
+5. Payroll (Payroll): Monthly payroll computation, payslips, EPF, SOCSO, EIS, PCB (MTD) statutory filings, and annual Form EA preparation.
+6. Finance (Finance): Financial planning & analysis (FP&A), cash flow forecasting, budgeting, working capital advisory, financial modeling, management consulting, and bank loan/credit facilities documentation support.
 
 ### WORKFLOW RESPONSIBILITIES
 - Automatically detect whether the user's input is an initial client inquiry/email/intake note ("LEAD_TRIAGE") or confirmed PIC scope/discovery notes requesting fee estimation ("QUOTATION_GENERATION").
-- For LEAD_TRIAGE: Extract lead_profile, determine primary_dept and secondary_depts, set sla_days_limit = 4, provide a concise 2-sentence routing_reason summarizing prospect background, core requirement, and the 4-working-day PIC outreach SLA, leave quotation.line_items empty with 0.00 totals, and draft a polite initial acknowledgement client_reply_draft.
-- For QUOTATION_GENERATION: Extract lead_profile and routing, generate realistic Malaysian SME quotation line items in MYR:
-  * Co Sec Retainer: RM 60 - RM 120 / month
-  * Sdn Bhd Incorporation: RM 1,500 - RM 2,500 (One-off)
-  * Monthly Accounting: RM 300 - RM 1,500 / month (tiered by volume/SST)
-  * Payroll Processing: RM 30 - RM 50 / employee / month (multiply by headcount for monthly rate_myr and note employee count in scope_summary)
-  * Corporate Tax (Form C): RM 1,200 - RM 3,500 / year
-  * Statutory Audit: RM 2,500 - RM 8,000+ / year
-  Compute exact fee subtotals: total_setup_fee_myr (sum of One-off items), total_monthly_recurring_myr (sum of Monthly items), and total_annual_recurring_myr (sum of Annually items).
-  Generate a formal client_reply_draft from T.J. Wang's Finance Department summarizing the proposed scope and explicitly confirming that final proposal dispatch is subject to management review.
+- For LEAD_TRIAGE (Task 1):
+  * Extract prospect details into lead_profile (company_name, contact_person, contact_phone, contact_email, entity_type: Sdn Bhd | Enterprise | LLP | Unknown).
+  * Assign primary_dept and any secondary_depts from: Co Sec, Accounting, Audit, Tax, Payroll, Finance.
+  * Set sla_days_limit = 4 and provide a concise 2-sentence routing_reason summarizing the prospect's background, core requirement, and noting that the assigned PIC must contact the lead within 4 working days.
+  * Return an empty quotation.line_items array with 0.00 totals.
+  * Draft a polite, professional initial acknowledgement client_reply_draft.
+- For QUOTATION_GENERATION (Task 2):
+  * Parse annual revenue/turnover tier, monthly transaction volume, employee headcount, advisory scope, and compliance deadlines.
+  * Generate realistic, professional Malaysian SME quotation line items in Ringgit Malaysia (MYR):
+    - Co Sec Retainer: ~RM 60 – RM 120 / month (Monthly)
+    - Sdn Bhd Incorporation: ~RM 1,500 – RM 2,500 (One-off)
+    - Monthly Accounting: ~RM 300 – RM 1,500 / month (Monthly, tiered by volume/SST)
+    - Payroll Processing: ~RM 30 – RM 50 / employee / month (Monthly; multiply by headcount for total monthly rate_myr and note employee count in scope_summary)
+    - Corporate Tax (Form C): ~RM 1,200 – RM 3,500 / year (Annually)
+    - Statutory Audit: ~RM 2,500 – RM 8,000+ / year (Annually)
+    - Finance Advisory / Cash Flow / FP&A: ~RM 800 – RM 3,000 / month (Monthly retainer) or ~RM 2,000 – RM 5,000 (One-off project basis)
+  * Compute exact fee subtotals: total_setup_fee_myr (sum of One-off items), total_monthly_recurring_myr (sum of Monthly items), and total_annual_recurring_myr (sum of Annually items).
+  * Generate a formal client_reply_draft from T.J. Wang's Finance Department summarizing the proposed scope and confirming that final proposal dispatch is subject to management review.
+
+### ZERO-DATA & ACCESS CONSTRAINTS
+- STRICTLY NO SAMPLE DATA & NO FAKE USERS: Never fabricate unrelated mock records or fake user accounts; only process the provided inquiry/scope input.
+- TWO ROLES ONLY: Standard users (full operational access except approval rights) and administrators (full access with exclusive quotation approval rights).
 
 Always return strictly valid JSON matching the provided schema.`;
 
@@ -143,23 +158,23 @@ async function startServer() {
                   type: Type.ARRAY,
                   items: {
                     type: Type.STRING,
-                    enum: ['CoSec', 'Accounting', 'Audit', 'Tax', 'Payroll'],
+                    enum: ['Co Sec', 'Accounting', 'Audit', 'Tax', 'Payroll', 'Finance'],
                   },
                   description: 'All applicable service departments identified in the inquiry.',
                 },
                 primary_department: {
                   type: Type.STRING,
-                  enum: ['CoSec', 'Accounting', 'Audit', 'Tax', 'Payroll'],
+                  enum: ['Co Sec', 'Accounting', 'Audit', 'Tax', 'Payroll', 'Finance'],
                   description: 'Primary lead-owning department PIC to route this inquiry to.',
                 },
                 inquiry_summary: {
                   type: Type.STRING,
-                  description: 'Concise 2-3 sentence executive summary of the client inquiry and compliance needs.',
+                  description: 'Concise 2-sentence executive summary of the client inquiry and compliance needs.',
                 },
                 inferred_entity_type: {
                   type: Type.STRING,
-                  enum: ['', 'Sdn Bhd', 'Sole Prop', 'LLP', 'Partnership', 'Bhd', 'Labuan'],
-                  description: 'Detected Malaysian entity type if mentioned, otherwise empty string.',
+                  enum: ['', 'Sdn Bhd', 'Enterprise', 'LLP', 'Unknown', 'Sole Prop', 'Bhd'],
+                  description: 'Detected Malaysian entity type if mentioned, otherwise Unknown or empty string.',
                 },
               },
               required: [
@@ -254,7 +269,7 @@ PIC Verified Discovery Scope Notes: ${scopeNotes || 'Standard annual statutory c
                     properties: {
                       serviceCategory: {
                         type: Type.STRING,
-                        enum: ['CoSec', 'Accounting', 'Audit', 'Tax', 'Payroll', 'Advisory'],
+                        enum: ['Co Sec', 'Accounting', 'Audit', 'Tax', 'Payroll', 'Finance'],
                       },
                       description: {
                         type: Type.STRING,
@@ -372,11 +387,14 @@ PIC Verified Discovery Scope Notes: ${scopeNotes || 'Standard annual statutory c
                   properties: {
                     primary_dept: {
                       type: Type.STRING,
-                      enum: ['Co Sec', 'Accounting', 'Audit', 'Tax', 'Payroll'],
+                      enum: ['Co Sec', 'Accounting', 'Audit', 'Tax', 'Payroll', 'Finance'],
                     },
                     secondary_depts: {
                       type: Type.ARRAY,
-                      items: { type: Type.STRING },
+                      items: {
+                        type: Type.STRING,
+                        enum: ['Co Sec', 'Accounting', 'Audit', 'Tax', 'Payroll', 'Finance'],
+                      },
                     },
                     sla_days_limit: { type: Type.INTEGER },
                     routing_reason: { type: Type.STRING },
@@ -396,7 +414,10 @@ PIC Verified Discovery Scope Notes: ${scopeNotes || 'Standard annual statutory c
                       items: {
                         type: Type.OBJECT,
                         properties: {
-                          dept: { type: Type.STRING },
+                          dept: {
+                            type: Type.STRING,
+                            enum: ['Co Sec', 'Accounting', 'Audit', 'Tax', 'Payroll', 'Finance'],
+                          },
                           service_title: { type: Type.STRING },
                           scope_summary: { type: Type.STRING },
                           billing_cycle: {
@@ -445,7 +466,35 @@ PIC Verified Discovery Scope Notes: ${scopeNotes || 'Standard annual statutory c
         return;
       }
 
-      const parsed = JSON.parse(rawText);
+      const parsed = JSON.parse(rawText) as {
+        routing?: { sla_days_limit?: number };
+        quotation?: {
+          line_items?: Array<{ billing_cycle?: string; rate_myr?: number }>;
+          total_setup_fee_myr?: number;
+          total_monthly_recurring_myr?: number;
+          total_annual_recurring_myr?: number;
+        };
+      };
+
+      // Guarantee exact arithmetic subtotals and 4-working-day SLA target
+      if (parsed.routing) {
+        parsed.routing.sla_days_limit = 4;
+      }
+      if (parsed.quotation && Array.isArray(parsed.quotation.line_items)) {
+        let setup = 0;
+        let monthly = 0;
+        let annual = 0;
+        for (const item of parsed.quotation.line_items) {
+          const rate = Number(item.rate_myr) || 0;
+          if (item.billing_cycle === 'One-off') setup += rate;
+          else if (item.billing_cycle === 'Monthly') monthly += rate;
+          else if (item.billing_cycle === 'Annually') annual += rate;
+        }
+        parsed.quotation.total_setup_fee_myr = Math.round(setup * 100) / 100;
+        parsed.quotation.total_monthly_recurring_myr = Math.round(monthly * 100) / 100;
+        parsed.quotation.total_annual_recurring_myr = Math.round(annual * 100) / 100;
+      }
+
       res.json({ result: parsed });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to process AI assistant request.';

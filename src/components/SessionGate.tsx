@@ -64,8 +64,8 @@ export function SessionGate({ onStartSession }: SessionGateProps) {
           </h1>
           <p className="text-sm sm:text-base text-neutral-600 leading-relaxed max-w-lg">
             Manage incoming client inquiries across Company Secretarial, Accounting, Statutory
-            Audit, Corporate &amp; Personal Tax, and Payroll with zero-cost browser persistence and
-            strict Administrator approval gating before dispatch.
+            Audit, Corporate &amp; Personal Tax, Payroll, and Finance Advisory (FP&amp;A) with
+            zero-cost browser persistence and strict Administrator approval gating before dispatch.
           </p>
 
           <div className="pt-2 border-t border-[#E3E3E3] grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
@@ -204,7 +204,7 @@ export function SessionGate({ onStartSession }: SessionGateProps) {
       <footer className="w-full bg-white border-t border-[#E3E3E3]">
         <div className="max-w-6xl mx-auto px-6 py-4 flex flex-wrap items-center justify-between gap-4 text-xs text-neutral-500">
           <span>T.J. Wang Finance Department</span>
-          <span>Co Sec · Accounting · Statutory Audit · Tax · Payroll</span>
+          <span>Co Sec · Accounting · Statutory Audit · Tax · Payroll · Finance</span>
         </div>
       </footer>
     </div>
