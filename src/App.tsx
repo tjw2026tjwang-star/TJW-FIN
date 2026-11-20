@@ -37,8 +37,10 @@ import {
   DEFAULT_VALIDITY_DAYS,
   evaluateLeadSla,
   formatDateShort,
+  formatKualaLumpurIso,
   formatMyr,
   formatValiditySummary,
+  generateAuditLogId,
   generateLeadCode,
   generateQuoteNumber,
   generateSafeId,
@@ -92,35 +94,130 @@ export default function App() {
     saveAuditLog(auditEntries);
   }, [auditEntries]);
 
+  const syncAuditLogsFromServer = async () => {
+    try {
+      const res = await fetch('/api/audit-logs');
+      if (!res.ok) return;
+      const data = (await res.json()) as { logs?: AuditEntry[] };
+      if (!Array.isArray(data.logs) || data.logs.length === 0) return;
+      setAuditEntries((prev) => {
+        const byId = new Map<string, AuditEntry>();
+        for (const item of data.logs!) {
+          if (item && item.log_id) byId.set(item.log_id, item);
+        }
+        for (const item of prev) {
+          if (item && item.log_id && !byId.has(item.log_id)) {
+            byId.set(item.log_id, item);
+          }
+        }
+        return Array.from(byId.values()).sort((a, b) =>
+          b.timestamp.localeCompare(a.timestamp)
+        );
+      });
+    } catch {
+      // Offline / local fallback remains intact in LocalStorage
+    }
+  };
+
+  useEffect(() => {
+    void syncAuditLogsFromServer();
+  }, []);
+
+  const SCREEN_PAGE_NAMES: Record<ActiveScreen, string> = {
+    leads: 'Leads Pipeline',
+    quotations: 'Quotation Workbench',
+    assistant: 'AI Intelligence Assistant',
+    audit: 'Audit Trail View',
+  };
+
   const appendAudit = (
     actor: UserSession,
-    action: AuditAction,
-    entityRef: string,
-    details: string,
-    metadata?: AuditEntry['metadata']
+    pageVisited: string,
+    actionTaken: AuditAction,
+    targetId: string,
+    actionDetails: string
   ) => {
-    const entry: AuditEntry = {
-      id: generateSafeId('aud'),
-      timestamp: new Date().toISOString(),
-      actorName: actor.name,
-      actorEmail: actor.email,
-      actorRole: actor.role,
-      department: actor.department,
-      action,
-      entityRef,
-      details,
-      ...(metadata ? { metadata } : {}),
-    };
-    setAuditEntries((prev) => [entry, ...prev]);
+    const timestamp = formatKualaLumpurIso();
+    let createdEntry: AuditEntry | null = null;
+
+    setAuditEntries((prev) => {
+      const logId = generateAuditLogId(prev.length);
+      const entry: AuditEntry = {
+        log_id: logId,
+        timestamp,
+        user_name: actor.name,
+        user_email: actor.email,
+        user_role: actor.role === 'Administrator' ? 'administrator' : 'user',
+        department: actor.department,
+        page_visited: pageVisited,
+        action_taken: actionTaken,
+        target_id: targetId || '—',
+        action_details: actionDetails,
+      };
+      createdEntry = entry;
+      return [entry, ...prev];
+    });
+
+    // Mirror append-only entry to backend immutable log store
+    setTimeout(() => {
+      if (!createdEntry) return;
+      void fetch('/api/audit-logs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(createdEntry),
+      }).catch(() => {
+        // LocalStorage retains immutable copy if network call fails
+      });
+    }, 0);
+  };
+
+  const navigateScreen = (nextScreen: ActiveScreen) => {
+    setActiveScreen(nextScreen);
+    if (session) {
+      appendAudit(
+        session,
+        SCREEN_PAGE_NAMES[nextScreen],
+        'VIEW_PAGE',
+        '—',
+        `Navigated to ${SCREEN_PAGE_NAMES[nextScreen]} (Department filter: ${activeDeptFilter}).`
+      );
+    }
+  };
+
+  const handleOpenTriageModal = () => {
+    setTriageModalOpen(true);
+    if (session) {
+      appendAudit(
+        session,
+        'Inbound Triage',
+        'VIEW_PAGE',
+        '—',
+        'Opened Step 1 Inbound Lead Triage & Routing form.'
+      );
+    }
+  };
+
+  const handleSelectContactFilter = (nextFilter: 'ALL' | ContactStatus | 'SLA_BREACH') => {
+    setContactFilter(nextFilter);
+    if (session && nextFilter === 'SLA_BREACH') {
+      appendAudit(
+        session,
+        'SLA Escalations',
+        'VIEW_PAGE',
+        '—',
+        `Opened SLA Escalations filter view (${activeBreachLeads.length} overdue leads).`
+      );
+    }
   };
 
   const handleStartSession = (newSession: UserSession) => {
     setSession(newSession);
     appendAudit(
       newSession,
-      'SESSION_STARTED',
-      newSession.department,
-      `Started workspace session as ${newSession.role} (${newSession.email}).`
+      'Leads Pipeline',
+      'VIEW_PAGE',
+      '—',
+      `Signed into Finance Operations workspace as ${newSession.role.toLowerCase()} (${newSession.email}, ${newSession.department}).`
     );
   };
 
@@ -175,9 +272,10 @@ export default function App() {
     setLeads((prev) => [newLead, ...prev]);
     appendAudit(
       session,
-      'LEAD_CREATED',
-      `${leadCode} · ${newLead.companyName}`,
-      `Routed inquiry to ${newLead.targetDept} (PIC: ${newLead.assignedPicName}). 4-working-day SLA clock initiated.`
+      'Inbound Triage',
+      'TRIAGE_INBOUND_LEAD',
+      leadCode,
+      `Triaged ${newLead.companyName} (${newLead.entityType}) to ${newLead.targetDept} (PIC: ${newLead.assignedPicName}). 4-working-day SLA clock initiated.`
     );
     setActiveScreen('leads');
     setSelectedLeadId(newLead.id);
@@ -323,15 +421,17 @@ export default function App() {
 
     appendAudit(
       session,
-      'LEAD_CREATED',
-      `${leadCode} · ${newLead.companyName}`,
-      `Imported scoped lead via Intelligence Assistant (Primary: ${primary}).`
+      'AI Intelligence Assistant',
+      'TRIAGE_INBOUND_LEAD',
+      leadCode,
+      `Imported scoped lead ${newLead.companyName} (${primary}) via Intelligence Assistant.`
     );
     appendAudit(
       session,
-      'QUOTATION_GENERATED',
-      `${quoteNumber} · ${newLead.companyName}`,
-      `Imported AI-calculated quotation (${lineItems.length} items, Year-1 ${formatMyr(totals.totalYearOneMyr)}) into Pending Approval queue.`
+      'Quotation Workbench',
+      'GENERATE_QUOTATION',
+      quoteNumber,
+      `Imported AI-generated MYR quotation for ${newLead.companyName} (${lineItems.length} items, Year-1 ${formatMyr(totals.totalYearOneMyr)}, valid ${validityDays}d until ${validUntil}).`
     );
 
     setSelectedQuotationId(newQuotation.id);
@@ -382,9 +482,10 @@ export default function App() {
     const sla = evaluateLeadSla(updatedLead);
     appendAudit(
       session,
-      'OUTREACH_UPDATED',
-      `${targetLead.leadCode} · ${targetLead.companyName}`,
-      `Contact status set to "${payload.contactStatus}" via ${payload.outreachChannel || 'Direct'}. SLA status: ${sla.label}.`
+      'Leads Pipeline',
+      'UPDATE_CONTACT_STATUS',
+      targetLead.leadCode,
+      `Contact status changed: "${targetLead.contactStatus}" -> "${payload.contactStatus}" via ${payload.outreachChannel || 'Direct'} for ${targetLead.companyName}. SLA status: ${sla.label}.`
     );
   };
 
@@ -412,9 +513,10 @@ export default function App() {
 
     appendAudit(
       session,
-      'SLA_REMINDER_LOGGED',
-      `${targetLead.leadCode} · ${targetLead.companyName}`,
-      `Logged SLA BREACH reminder #${nextCount} for PIC ${targetLead.assignedPicName} (${sla.workingDaysElapsed} working days uncontacted).`
+      'SLA Escalations',
+      'UPDATE_CONTACT_STATUS',
+      targetLead.leadCode,
+      `Logged SLA BREACH reminder #${nextCount} for PIC ${targetLead.assignedPicName} on ${targetLead.companyName} (${sla.workingDaysElapsed} working days uncontacted).`
     );
   };
 
@@ -447,9 +549,10 @@ export default function App() {
     setLeads((prev) => prev.map((l) => (l.id === leadId ? updatedLead : l)));
     appendAudit(
       session,
-      'SCOPE_LOGGED',
-      `${targetLead.leadCode} · ${targetLead.companyName}`,
-      `Logged service scope: Turnover ${formatMyr(scopeInput.annualTurnoverMyr)}, ${scopeInput.monthlyTransactionVolume} tx/mo, ${scopeInput.headcount} staff, services [${scopeInput.requestedServices.join(', ')}].`
+      'Leads Pipeline',
+      'LOG_SERVICE_SCOPE',
+      targetLead.leadCode,
+      `Logged confirmed scope for ${targetLead.companyName}: Turnover ${formatMyr(scopeInput.annualTurnoverMyr)}, ${scopeInput.monthlyTransactionVolume} tx/mo, ${scopeInput.headcount} staff, services [${scopeInput.requestedServices.join(', ')}].`
     );
   };
 
@@ -509,9 +612,10 @@ export default function App() {
 
     appendAudit(
       session,
-      'QUOTATION_GENERATED',
-      `${quoteNumber} · ${scopedLead.companyName}`,
-      `Generated Malaysian SME quotation draft (${items.length} line items, Year-1 ${formatMyr(totals.totalYearOneMyr)}). Entered Pending Approval queue.`
+      'Quotation Workbench',
+      'GENERATE_QUOTATION',
+      quoteNumber,
+      `Generated Malaysian SME quotation draft for ${scopedLead.companyName} (${items.length} line items, Year-1 ${formatMyr(totals.totalYearOneMyr)}, valid ${DEFAULT_VALIDITY_DAYS} days until ${newQuotation.validUntil}). Entered Pending Approval.`
     );
 
     setSelectedLeadId(null);
@@ -554,9 +658,10 @@ export default function App() {
 
     appendAudit(
       session,
-      'QUOTATION_UPDATED',
-      `${existing.quoteNumber} · ${existing.companyName}`,
-      `Updated quotation line items (${payload.lineItems.length} items). Revised Year-1 total: ${formatMyr(totals.totalYearOneMyr)}.`
+      'Quotation Workbench',
+      'GENERATE_QUOTATION',
+      existing.quoteNumber,
+      `Revised line items for ${existing.companyName}: Year-1 ${formatMyr(existing.totalYearOneMyr)} -> ${formatMyr(totals.totalYearOneMyr)} (${payload.lineItems.length} items).`
     );
   };
 
@@ -584,11 +689,10 @@ export default function App() {
 
     appendAudit(
       session,
-      approved ? 'QUOTATION_APPROVED' : 'QUOTATION_APPROVAL_REVOKED',
-      `${existing.quoteNumber} · ${existing.companyName}`,
-      approved
-        ? `Administrator ${session.name} approved quotation (Year-1 ${formatMyr(existing.totalYearOneMyr)}). Step 8 dispatch unlocked.`
-        : `Administrator ${session.name} unticked quotation approval. Step 8 dispatch re-locked.`
+      'Quotation Workbench',
+      'APPROVE_QUOTATION',
+      existing.quoteNumber,
+      `is_approved changed: ${existing.isApproved} -> ${approved} by Administrator ${session.name} for ${existing.companyName} (Year-1 ${formatMyr(existing.totalYearOneMyr)}).`
     );
   };
 
@@ -602,7 +706,7 @@ export default function App() {
     const existing = quotations.find((q) => q.id === quotationId);
     if (!existing) return;
 
-    const nowIso = new Date().toISOString();
+    const nowIso = formatKualaLumpurIso();
     const prevDays = existing.validityDays || DEFAULT_VALIDITY_DAYS;
     const prevUntil =
       existing.validUntil || computeValidUntilDate(existing.createdAt, prevDays);
@@ -638,10 +742,10 @@ export default function App() {
 
     appendAudit(
       session,
-      'QUOTATION_VALIDITY_AMENDED',
-      `${existing.quoteNumber} · ${existing.companyName}`,
-      `amended_by: ${amendedBy} | previous_validity: ${previousValidity} -> new_validity: ${newValidity} | amendment_timestamp: ${nowIso}`,
-      amendmentRecord
+      'Quotation Workbench',
+      'AMEND_QUOTATION_VALIDITY',
+      existing.quoteNumber,
+      `amended_by: ${amendedBy} | previous_validity: ${previousValidity} -> new_validity: ${newValidity} | amendment_timestamp: ${nowIso}`
     );
   };
 
@@ -680,9 +784,10 @@ export default function App() {
 
     appendAudit(
       session,
-      'QUOTATION_DISPATCHED',
-      `${existing.quoteNumber} · ${existing.companyName}`,
-      `Dispatched Administrator-approved quotation via ${channel}. Line items permanently locked.`
+      'Quotation Workbench',
+      'DISPATCH_QUOTATION',
+      existing.quoteNumber,
+      `Dispatched Administrator-approved quotation for ${existing.companyName} via ${channel}. Line items permanently locked.`
     );
   };
 
@@ -789,7 +894,7 @@ export default function App() {
                   <button
                     key={tab.id}
                     type="button"
-                    onClick={() => setActiveScreen(tab.id)}
+                    onClick={() => navigateScreen(tab.id)}
                     className={`py-5 border-b-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-1.5 ${
                       active
                         ? 'border-[#CB3737] text-[#171717] font-semibold'
@@ -855,7 +960,7 @@ export default function App() {
 
             <button
               type="button"
-              onClick={() => setTriageModalOpen(true)}
+              onClick={handleOpenTriageModal}
               className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-[#CB3737] hover:bg-[#B02D2D] rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
               <Plus className="w-3.5 h-3.5" />
@@ -878,7 +983,7 @@ export default function App() {
               <button
                 key={tab.id}
                 type="button"
-                onClick={() => setActiveScreen(tab.id)}
+                onClick={() => navigateScreen(tab.id)}
                 className={`px-3 py-1 text-xs font-medium rounded-md ${
                   activeScreen === tab.id
                     ? 'bg-[#CB3737] text-white'
@@ -988,7 +1093,7 @@ export default function App() {
                 </div>
                 <button
                   type="button"
-                  onClick={() => setContactFilter('SLA_BREACH')}
+                  onClick={() => handleSelectContactFilter('SLA_BREACH')}
                   className="px-3.5 py-1.5 text-xs font-semibold text-white bg-[#CB3737] hover:bg-[#B02D2D] rounded-lg transition-colors whitespace-nowrap cursor-pointer"
                 >
                   View Escalations ({activeBreachLeads.length})
@@ -1029,7 +1134,7 @@ export default function App() {
                       <button
                         key={item.id}
                         type="button"
-                        onClick={() => setContactFilter(item.id)}
+                        onClick={() => handleSelectContactFilter(item.id)}
                         className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
                           active
                             ? item.id === 'SLA_BREACH'
@@ -1061,7 +1166,7 @@ export default function App() {
                   </div>
                   <button
                     type="button"
-                    onClick={() => setTriageModalOpen(true)}
+                    onClick={handleOpenTriageModal}
                     className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-[#CB3737] hover:bg-[#B02D2D] rounded-lg transition-colors cursor-pointer"
                   >
                     <Plus className="w-3.5 h-3.5" />
@@ -1216,11 +1321,22 @@ export default function App() {
             session={session}
             onImportLead={handleImportLeadFromAssistant}
             onImportLeadAndQuotation={handleImportLeadAndQuotationFromAssistant}
+            onAuditEventCreated={(entry) =>
+              setAuditEntries((prev) =>
+                prev.some((e) => e.log_id === entry.log_id) ? prev : [entry, ...prev]
+              )
+            }
           />
         )}
 
-        {/* SCREEN 5: AUDIT & ACTIVITY LOG */}
-        {activeScreen === 'audit' && <AuditLogView entries={auditEntries} />}
+        {/* SCREEN 5: IMMUTABLE AUDIT TRAIL VIEW */}
+        {activeScreen === 'audit' && (
+          <AuditLogView
+            entries={auditEntries}
+            session={session}
+            onSyncServerLogs={syncAuditLogsFromServer}
+          />
+        )}
       </main>
 
       {/* Screen 2: Inbound Triage Modal (Step 1) */}

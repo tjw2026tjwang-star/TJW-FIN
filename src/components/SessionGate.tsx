@@ -75,8 +75,8 @@ export function SessionGate({ onStartSession }: SessionGateProps) {
                 Administrator Role
               </p>
               <p className="text-neutral-600 leading-relaxed">
-                Full operational access plus exclusive authority to amend quotation validity and
-                approve quotations for dispatch (Steps 7 &amp; 8).
+                Full operational access plus exclusive authority to approve quotations, amend
+                quotation validity, and export the immutable Audit Trail (CSV/JSON).
               </p>
             </div>
             <div className="space-y-1">
@@ -85,8 +85,8 @@ export function SessionGate({ onStartSession }: SessionGateProps) {
                 User Role
               </p>
               <p className="text-neutral-600 leading-relaxed">
-                Triage leads, log PIC outreach, record scopes, and draft quotations. Validity
-                amendments and approval gate are strictly locked.
+                Triage leads, log PIC outreach, record scopes, and draft quotations. Approval gate,
+                validity amendments, and audit log exports are strictly locked.
               </p>
             </div>
           </div>

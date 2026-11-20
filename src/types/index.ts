@@ -40,17 +40,15 @@ export type BillingFrequency = 'One-off' | 'Monthly' | 'Annual';
 export type DispatchChannel = '' | 'Email' | 'WhatsApp';
 
 export type AuditAction =
-  | 'SESSION_STARTED'
-  | 'LEAD_CREATED'
-  | 'OUTREACH_UPDATED'
-  | 'SLA_REMINDER_LOGGED'
-  | 'SCOPE_LOGGED'
-  | 'QUOTATION_GENERATED'
-  | 'QUOTATION_UPDATED'
-  | 'QUOTATION_VALIDITY_AMENDED'
-  | 'QUOTATION_APPROVED'
-  | 'QUOTATION_APPROVAL_REVOKED'
-  | 'QUOTATION_DISPATCHED';
+  | 'VIEW_PAGE'
+  | 'TRIAGE_INBOUND_LEAD'
+  | 'UPDATE_CONTACT_STATUS'
+  | 'LOG_SERVICE_SCOPE'
+  | 'GENERATE_QUOTATION'
+  | 'AMEND_QUOTATION_VALIDITY'
+  | 'APPROVE_QUOTATION'
+  | 'DISPATCH_QUOTATION'
+  | 'EXPORT_AUDIT_LOG';
 
 export const DEPARTMENTS: Department[] = [
   'Co Sec',
@@ -128,8 +126,21 @@ export interface AssistantLineItem {
   rate_myr: number;
 }
 
+export interface AuditEntry {
+  log_id: string;
+  timestamp: string; // ISO 8601 in Asia/Kuala_Lumpur (UTC+8)
+  user_name: string;
+  user_email: string;
+  user_role: 'administrator' | 'user';
+  department: Department;
+  page_visited: string;
+  action_taken: AuditAction;
+  target_id: string;
+  action_details: string;
+}
+
 export interface AssistantResponse {
-  mode: 'LEAD_TRIAGE' | 'QUOTATION_GENERATION';
+  mode: 'LEAD_TRIAGE' | 'QUOTATION_GENERATION' | 'AUDIT_LOG_EVENT';
   lead_profile: {
     company_name: string;
     contact_person: string;
@@ -151,6 +162,7 @@ export interface AssistantResponse {
     total_monthly_recurring_myr: number;
     total_annual_recurring_myr: number;
   };
+  audit_event: AuditEntry;
   client_reply_draft: string;
 }
 
@@ -224,22 +236,4 @@ export interface Quotation {
   createdByName: string;
   createdAt: string;
   updatedAt: string;
-}
-
-export interface AuditEntry {
-  id: string;
-  timestamp: string;
-  actorName: string;
-  actorEmail: string;
-  actorRole: UserRole;
-  department: Department;
-  action: AuditAction;
-  entityRef: string;
-  details: string;
-  metadata?: {
-    amended_by?: string;
-    previous_validity?: string;
-    new_validity?: string;
-    amendment_timestamp?: string;
-  };
 }

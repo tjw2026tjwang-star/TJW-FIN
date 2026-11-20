@@ -9,20 +9,22 @@ import {
   Sparkles,
   UserPlus,
 } from 'lucide-react';
-import type { AssistantResponse, UserSession } from '../types';
+import type { AssistantResponse, AuditEntry, UserSession } from '../types';
 import { DEPARTMENT_FULL_NAMES } from '../types';
-import { formatMyr } from '../lib/sla';
+import { formatDateTime, formatMyr } from '../lib/sla';
 
 interface AssistantWorkbenchProps {
   session: UserSession;
   onImportLead: (result: AssistantResponse, rawInput: string) => void;
   onImportLeadAndQuotation: (result: AssistantResponse, rawInput: string) => void;
+  onAuditEventCreated: (entry: AuditEntry) => void;
 }
 
 export function AssistantWorkbench({
   session,
   onImportLead,
   onImportLeadAndQuotation,
+  onAuditEventCreated,
 }: AssistantWorkbenchProps) {
   const [inputText, setInputText] = useState('');
   const [loading, setLoading] = useState(false);
@@ -45,13 +47,25 @@ export function AssistantWorkbench({
       const res = await fetch('/api/ai/assistant', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ input: trimmed }),
+        body: JSON.stringify({
+          input: trimmed,
+          sessionContext: {
+            user_name: session.name,
+            user_email: session.email,
+            user_role: session.role === 'Administrator' ? 'administrator' : 'user',
+            department: session.department,
+            page_visited: 'AI Intelligence Assistant',
+          },
+        }),
       });
       const data = (await res.json()) as { result?: AssistantResponse; error?: string };
       if (!res.ok || !data.result) {
         throw new Error(data.error || 'Assistant failed to analyze input.');
       }
       setResult(data.result);
+      if (data.result.audit_event) {
+        onAuditEventCreated(data.result.audit_event);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to reach assistant endpoint.');
     } finally {
@@ -339,6 +353,26 @@ export function AssistantWorkbench({
                         </tbody>
                       </table>
                     </div>
+                  </div>
+                )}
+
+                {/* Recorded Immutable Audit Event */}
+                {result.audit_event && (
+                  <div className="p-3.5 bg-[#FAFAFA] border border-[#E3E3E3] rounded-lg flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <div className="space-y-0.5">
+                      <p className="font-semibold text-[#171717]">
+                        Recorded Audit Event:{' '}
+                        <span className="font-mono text-[#CB3737]">{result.audit_event.log_id}</span>
+                        {' · '}
+                        <span className="font-mono text-neutral-700">
+                          {result.audit_event.action_taken}
+                        </span>
+                      </p>
+                      <p className="text-neutral-600">{result.audit_event.action_details}</p>
+                    </div>
+                    <span className="font-mono tabular-nums text-[11px] text-neutral-500">
+                      {formatDateTime(result.audit_event.timestamp)} MYT
+                    </span>
                   </div>
                 )}
 

@@ -4,7 +4,7 @@ const STORAGE_KEYS = {
   session: 'tjw_finance_session_v1',
   leads: 'tjw_finance_leads_v1',
   quotations: 'tjw_finance_quotations_v1',
-  audit: 'tjw_finance_audit_v1',
+  audit: 'tjw_finance_audit_v2',
 } as const;
 
 function safeRead<T>(key: string, fallback: T): T {
@@ -58,9 +58,26 @@ export function saveQuotations(quotations: Quotation[]): void {
 }
 
 export function loadAuditLog(): AuditEntry[] {
-  return safeRead<AuditEntry[]>(STORAGE_KEYS.audit, []);
+  const raw = safeRead<AuditEntry[]>(STORAGE_KEYS.audit, []);
+  return Array.isArray(raw) ? raw.filter((item) => item && typeof item.log_id === 'string') : [];
 }
 
+/**
+ * Append-only persistence guard: never drops previously persisted immutable log_ids.
+ */
 export function saveAuditLog(entries: AuditEntry[]): void {
-  safeWrite(STORAGE_KEYS.audit, entries);
+  const existing = loadAuditLog();
+  const byId = new Map<string, AuditEntry>();
+  for (const item of entries) {
+    if (item && item.log_id) byId.set(item.log_id, item);
+  }
+  for (const item of existing) {
+    if (item && item.log_id && !byId.has(item.log_id)) {
+      byId.set(item.log_id, item);
+    }
+  }
+  const merged = Array.from(byId.values()).sort((a, b) =>
+    b.timestamp.localeCompare(a.timestamp)
+  );
+  safeWrite(STORAGE_KEYS.audit, merged);
 }

@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI, Type } from '@google/genai';
@@ -9,6 +10,121 @@ const __dirname = path.dirname(__filename);
 
 const PORT = Number(process.env.PORT) || 3000;
 const isProd = process.env.NODE_ENV === 'production';
+
+// Zero-cost local append-only audit trail store (initializes completely empty)
+const AUDIT_DATA_DIR = path.resolve(__dirname, '.data');
+const AUDIT_LOG_FILE = path.join(AUDIT_DATA_DIR, 'audit-logs.jsonl');
+
+interface ImmutableAuditRecord {
+  log_id: string;
+  timestamp: string;
+  user_name: string;
+  user_email: string;
+  user_role: 'administrator' | 'user';
+  department: 'Co Sec' | 'Accounting' | 'Audit' | 'Tax' | 'Payroll' | 'Finance';
+  page_visited: string;
+  action_taken: string;
+  target_id: string;
+  action_details: string;
+}
+
+const VALID_DEPARTMENTS = new Set(['Co Sec', 'Accounting', 'Audit', 'Tax', 'Payroll', 'Finance']);
+
+function formatKualaLumpurIso(date: Date = new Date()): string {
+  const klMs = date.getTime() + 8 * 60 * 60 * 1000;
+  const kl = new Date(klMs);
+  const y = kl.getUTCFullYear();
+  const m = String(kl.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(kl.getUTCDate()).padStart(2, '0');
+  const hh = String(kl.getUTCHours()).padStart(2, '0');
+  const mm = String(kl.getUTCMinutes()).padStart(2, '0');
+  const ss = String(kl.getUTCSeconds()).padStart(2, '0');
+  const ms = String(kl.getUTCMilliseconds()).padStart(3, '0');
+  return `${y}-${m}-${d}T${hh}:${mm}:${ss}.${ms}+08:00`;
+}
+
+function formatKualaLumpurCompactDate(date: Date = new Date()): string {
+  const klMs = date.getTime() + 8 * 60 * 60 * 1000;
+  const kl = new Date(klMs);
+  const y = kl.getUTCFullYear();
+  const m = String(kl.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(kl.getUTCDate()).padStart(2, '0');
+  return `${y}${m}${d}`;
+}
+
+function readImmutableAuditLogs(): ImmutableAuditRecord[] {
+  try {
+    if (!fs.existsSync(AUDIT_LOG_FILE)) return [];
+    const content = fs.readFileSync(AUDIT_LOG_FILE, 'utf8');
+    if (!content.trim()) return [];
+    const lines = content.split('\n').filter((line) => line.trim().length > 0);
+    const parsed: ImmutableAuditRecord[] = [];
+    for (const line of lines) {
+      try {
+        const obj = JSON.parse(line) as ImmutableAuditRecord;
+        if (obj && typeof obj.log_id === 'string') {
+          parsed.push(obj);
+        }
+      } catch {
+        // Skip malformed line without ever mutating file
+      }
+    }
+    return parsed.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+  } catch {
+    return [];
+  }
+}
+
+function appendImmutableAuditLog(input: Partial<ImmutableAuditRecord>): ImmutableAuditRecord {
+  const existing = readImmutableAuditLogs();
+  const now = new Date();
+  const timestamp =
+    typeof input.timestamp === 'string' && input.timestamp.includes('+08:00')
+      ? input.timestamp
+      : formatKualaLumpurIso(now);
+  const logId =
+    typeof input.log_id === 'string' && input.log_id.startsWith('LOG-')
+      ? input.log_id
+      : `LOG-${formatKualaLumpurCompactDate(now)}-${String(existing.length + 1).padStart(3, '0')}`;
+
+  // Prevent duplicate log_id writes
+  const duplicate = existing.find((item) => item.log_id === logId);
+  if (duplicate) return duplicate;
+
+  const roleNorm = String(input.user_role || '').toLowerCase() === 'administrator'
+    ? 'administrator'
+    : 'user';
+  const deptNorm = VALID_DEPARTMENTS.has(String(input.department || ''))
+    ? (input.department as ImmutableAuditRecord['department'])
+    : 'Finance';
+
+  const record: ImmutableAuditRecord = {
+    log_id: logId,
+    timestamp,
+    user_name: String(input.user_name || 'Unknown Staff').trim(),
+    user_email: String(input.user_email || '').trim(),
+    user_role: roleNorm,
+    department: deptNorm,
+    page_visited: String(input.page_visited || 'Leads Pipeline').trim(),
+    action_taken: String(input.action_taken || 'VIEW_PAGE').trim(),
+    target_id: String(input.target_id || '—').trim(),
+    action_details: String(input.action_details || '').trim(),
+  };
+
+  if (!fs.existsSync(AUDIT_DATA_DIR)) {
+    fs.mkdirSync(AUDIT_DATA_DIR, { recursive: true });
+  }
+  fs.appendFileSync(AUDIT_LOG_FILE, `${JSON.stringify(record)}\n`, { encoding: 'utf8' });
+  return record;
+}
+
+function escapeCsvCell(value: string): string {
+  const str = String(value ?? '');
+  if (/[",\n\r]/.test(str)) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return str;
+}
 
 function createGeminiClient() {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -51,24 +167,24 @@ Using confirmed PIC discovery scope notes, entity profile, and required service 
 Provide clear, practical deliverables for each line item, plus concise Malaysian corporate legal remarks (validity 30 days, SST 8% service tax note where applicable, payment terms 50% deposit upon acceptance, and notice that final proposal dispatch is subject to management review), realistic scoping assumptions, and explicit out-of-scope exclusions.
 Output exact JSON matching the schema.`;
 
-const UNIFIED_ASSISTANT_SYSTEM_PROMPT = `You are the Lead Triage, SLA Routing, and Quotation Intelligence Assistant for T.J. Wang's Finance Department.
+const UNIFIED_ASSISTANT_SYSTEM_PROMPT = `You are the Lead Triage, SLA Routing, Quotation Intelligence, and Compliance Audit Engine for T.J. Wang's Finance Department.
 
 ### OPERATIONAL CONTEXT & SERVICES
-You handle inbound client inquiries and quotation generation across 6 primary corporate service lines:
-1. Company Secretarial (Co Sec): New Sdn Bhd/LLP incorporation, annual compliance maintenance, AGM/board resolutions, share transfers, strike-off, CTC documents.
+You handle inbound client inquiries, quotation generation, and operational compliance tracking across 6 corporate service lines:
+1. Company Secretarial (Co Sec): Incorporation, annual returns, AGM/board resolutions, share transfers, strike-off, CTC docs.
 2. Accounting & Bookkeeping (Accounting): Monthly/quarterly bookkeeping, SST-02 return filing, financial statement compilation, management accounts.
 3. Statutory Audit (Audit): Annual statutory financial audit, independent compliance review.
-4. Corporate & Personal Tax (Tax): Corporate tax (Form C), CP204 tax estimates/revisions, employer returns (Form E), personal income tax (Form B/BE).
-5. Payroll (Payroll): Monthly payroll computation, payslips, EPF, SOCSO, EIS, PCB (MTD) statutory filings, and annual Form EA preparation.
-6. Finance (Finance): Financial planning & analysis (FP&A), cash flow forecasting, budgeting, working capital advisory, financial modeling, management consulting, and bank loan/credit facilities documentation support.
+4. Corporate & Personal Tax (Tax): Corporate tax (Form C), CP204 estimates/revisions, employer returns (Form E), personal tax (Form B/BE).
+5. Payroll (Payroll): Monthly payroll computation, payslips, EPF, SOCSO, EIS, PCB (MTD) statutory filings, annual Form EA.
+6. Finance (Finance): Financial planning & analysis (FP&A), cash flow forecasting, budgeting, working capital advisory, financial modeling, management consulting, and bank facility documentation.
 
 ### WORKFLOW RESPONSIBILITIES
-- Automatically detect whether the user's input is an initial client inquiry/email/intake note ("LEAD_TRIAGE") or confirmed PIC scope/discovery notes requesting fee estimation ("QUOTATION_GENERATION").
+- Automatically detect whether the user's input is an initial client inquiry/email/intake note ("LEAD_TRIAGE"), confirmed PIC scope/discovery notes requesting fee estimation ("QUOTATION_GENERATION"), or an operational compliance/audit event ("AUDIT_LOG_EVENT").
 - For LEAD_TRIAGE (Task 1):
   * Extract prospect details into lead_profile (company_name, contact_person, contact_phone, contact_email, entity_type: Sdn Bhd | Enterprise | LLP | Unknown).
   * Assign primary_dept and any secondary_depts from: Co Sec, Accounting, Audit, Tax, Payroll, Finance.
   * Set sla_days_limit = 4 and provide a concise 2-sentence routing_reason summarizing the prospect's background, core requirement, and noting that the assigned PIC must contact the lead within 4 working days.
-  * Return an empty quotation.line_items array with 0.00 totals.
+  * Return an empty quotation.line_items array with 0.00 totals and default validity_days = 30.
   * Draft a polite, professional initial acknowledgement client_reply_draft.
 - For QUOTATION_GENERATION (Task 2):
   * Parse annual revenue/turnover tier, monthly transaction volume, employee headcount, advisory scope, and compliance deadlines.
@@ -83,10 +199,12 @@ You handle inbound client inquiries and quotation generation across 6 primary co
   * Compute exact fee subtotals: total_setup_fee_myr (sum of One-off items), total_monthly_recurring_myr (sum of Monthly items), and total_annual_recurring_myr (sum of Annually items).
   * Default Quotation Validity: Set validity_days = 30 and valid_until = exact YYYY-MM-DD date 30 days from today's date (provided in prompt context).
   * Generate a formal client_reply_draft from T.J. Wang's Finance Department summarizing the proposed scope and 30-day validity terms, explicitly confirming that final proposal dispatch is subject to management review.
+- ALWAYS populate audit_event accurately reflecting the user session context and the action_taken (e.g., TRIAGE_INBOUND_LEAD, GENERATE_QUOTATION, VIEW_PAGE, etc.) with Asia/Kuala_Lumpur ISO 8601 timestamp (+08:00).
 
-### ROLE-BASED ACCESS & ZERO-DATA CONSTRAINTS
-- STRICTLY NO SAMPLE DATA & NO FAKE USERS: Never fabricate unrelated mock records or fake user accounts; only process the provided inquiry/scope input.
-- TWO ROLES ONLY: Standard Users (full operational access except approval and validity amendments) and Administrators (exclusive authority to amend quotation validity and approve quotations for dispatch).
+### ROLE-BASED ACCESS & IMMUTABLE AUDIT CONSTRAINTS
+- STRICTLY NO SAMPLE DATA & NO FAKE USERS: Never fabricate unrelated mock records or fake user accounts; only process the provided input.
+- TWO ROLES ONLY: Standard Users ('user': full operational access except quotation approval, validity amendments, and audit log export) and Administrators ('administrator': exclusive authority to approve quotes, amend quotation validity, and download/export the immutable audit trail).
+- IMMUTABLE APPEND-ONLY AUDIT TRAIL: Nobody, including Administrators, can delete, purge, alter, or truncate audit log records.
 
 Always return strictly valid JSON matching the provided schema.`;
 
@@ -110,7 +228,127 @@ async function startServer() {
   app.use(express.json({ limit: '2mb' }));
 
   app.get('/api/health', (_req, res) => {
-    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+    res.json({ status: 'ok', timestamp: formatKualaLumpurIso() });
+  });
+
+  // =========================================================================
+  // IMMUTABLE APPEND-ONLY AUDIT TRAIL ENDPOINTS (NO DELETE / PUT / PATCH)
+  // =========================================================================
+  app.get('/api/audit-logs', (_req, res) => {
+    res.json({ logs: readImmutableAuditLogs() });
+  });
+
+  app.post('/api/audit-logs', (req, res) => {
+    try {
+      const body = req.body as Partial<ImmutableAuditRecord>;
+      if (!body || !body.user_name || !body.action_taken) {
+        res.status(400).json({ error: 'user_name and action_taken are required to append an audit log.' });
+        return;
+      }
+      const created = appendImmutableAuditLog(body);
+      res.status(201).json({ log: created });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to append audit log.';
+      res.status(500).json({ error: message });
+    }
+  });
+
+  // Strict No-Deletion / No-Mutation Rule: Reject DELETE, PUT, PATCH with HTTP 403 Forbidden
+  const rejectAuditMutation = (_req: express.Request, res: express.Response) => {
+    res.status(403).json({
+      error:
+        'HTTP 403 Forbidden: The T.J. Wang Finance Department audit trail is strictly append-only. Deleting, altering, or truncating audit records is prohibited for all roles including Administrators.',
+    });
+  };
+  app.delete('/api/audit-logs', rejectAuditMutation);
+  app.delete('/api/audit-logs/:id', rejectAuditMutation);
+  app.put('/api/audit-logs', rejectAuditMutation);
+  app.put('/api/audit-logs/:id', rejectAuditMutation);
+  app.patch('/api/audit-logs', rejectAuditMutation);
+  app.patch('/api/audit-logs/:id', rejectAuditMutation);
+
+  // Administrator-Exclusive Audit Trail Export Endpoint (CSV or JSON)
+  app.get('/api/audit-logs/export', (req, res) => {
+    const roleHeader = String(req.header('x-user-role') || req.query.role || '')
+      .trim()
+      .toLowerCase();
+
+    if (roleHeader !== 'administrator') {
+      res.status(403).json({
+        error: 'Export restricted to System Administrator / Manager (role === "administrator" required).',
+      });
+      return;
+    }
+
+    const format = String(req.query.format || 'csv').toLowerCase() === 'json' ? 'json' : 'csv';
+    const userName = String(req.header('x-user-name') || 'Administrator').trim();
+    const userEmail = String(req.header('x-user-email') || '').trim();
+    const department = String(req.header('x-user-department') || 'Finance').trim();
+
+    // Append immutable EXPORT_AUDIT_LOG event before streaming file data
+    const exportEvent = appendImmutableAuditLog({
+      user_name: userName,
+      user_email: userEmail,
+      user_role: 'administrator',
+      department: VALID_DEPARTMENTS.has(department)
+        ? (department as ImmutableAuditRecord['department'])
+        : 'Finance',
+      page_visited: 'Audit Trail View',
+      action_taken: 'EXPORT_AUDIT_LOG',
+      target_id: `AUDIT-${format.toUpperCase()}`,
+      action_details: `Administrator ${userName} exported immutable audit trail in ${format.toUpperCase()} format.`,
+    });
+
+    const logs = readImmutableAuditLogs();
+    const dateStamp = formatKualaLumpurCompactDate();
+    res.setHeader('x-export-log-id', exportEvent.log_id);
+
+    if (format === 'json') {
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="tjw_audit_trail_${dateStamp}.json"`
+      );
+      res.send(JSON.stringify(logs, null, 2));
+      return;
+    }
+
+    const headers = [
+      'log_id',
+      'timestamp',
+      'user_name',
+      'user_email',
+      'user_role',
+      'department',
+      'page_visited',
+      'action_taken',
+      'target_id',
+      'action_details',
+    ];
+    const rows = logs.map((row) =>
+      [
+        row.log_id,
+        row.timestamp,
+        row.user_name,
+        row.user_email,
+        row.user_role,
+        row.department,
+        row.page_visited,
+        row.action_taken,
+        row.target_id,
+        row.action_details,
+      ]
+        .map(escapeCsvCell)
+        .join(',')
+    );
+    const csvContent = [headers.join(','), ...rows].join('\r\n');
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="tjw_audit_trail_${dateStamp}.csv"`
+    );
+    res.send(csvContent);
   });
 
   // Step 1: Inbound Email Extraction & AI Triage Router
@@ -337,10 +575,19 @@ PIC Verified Discovery Scope Notes: ${scopeNotes || 'Standard annual statutory c
     }
   });
 
-  // Unified AI Intelligence Assistant (Auto-detects LEAD_TRIAGE vs QUOTATION_GENERATION)
+  // Unified AI Intelligence & Compliance Audit Assistant
   app.post('/api/ai/assistant', async (req, res) => {
     try {
-      const { input } = req.body as { input?: string };
+      const { input, sessionContext } = req.body as {
+        input?: string;
+        sessionContext?: {
+          user_name?: string;
+          user_email?: string;
+          user_role?: 'administrator' | 'user';
+          department?: string;
+          page_visited?: string;
+        };
+      };
       if (!input || typeof input !== 'string' || input.trim().length < 10) {
         res.status(400).json({
           error: 'Please enter a client inquiry email, intake note, or confirmed PIC scope (at least 10 characters).',
@@ -355,12 +602,31 @@ PIC Verified Discovery Scope Notes: ${scopeNotes || 'Standard annual statutory c
       const defaultValidUntilYmd = formatYmd(
         new Date(today.getFullYear(), today.getMonth(), today.getDate() + 30)
       );
+      const klTimestamp = formatKualaLumpurIso(today);
+      const nextLogId = `LOG-${formatKualaLumpurCompactDate(today)}-${String(
+        readImmutableAuditLogs().length + 1
+      ).padStart(3, '0')}`;
+
+      const ctxName = sessionContext?.user_name || 'Staff Member';
+      const ctxEmail = sessionContext?.user_email || '';
+      const ctxRole = sessionContext?.user_role === 'administrator' ? 'administrator' : 'user';
+      const ctxDept = VALID_DEPARTMENTS.has(String(sessionContext?.department || ''))
+        ? (sessionContext!.department as ImmutableAuditRecord['department'])
+        : 'Finance';
+      const ctxPage = sessionContext?.page_visited || 'AI Intelligence Assistant';
 
       const ai = createGeminiClient();
       const response = await withRetry(() =>
         ai.models.generateContent({
           model: 'gemini-4-hydrogen',
-          contents: `Current Date: ${todayYmd}\nDefault 30-Day Valid Until Date: ${defaultValidUntilYmd}\n\nInput:\n${input.slice(0, 9500)}`,
+          contents: `Current Date: ${todayYmd}
+Current Kuala Lumpur Timestamp (UTC+8): ${klTimestamp}
+Default 30-Day Valid Until Date: ${defaultValidUntilYmd}
+Assigned Audit Log ID: ${nextLogId}
+Active Session Context: user_name="${ctxName}", user_email="${ctxEmail}", user_role="${ctxRole}", department="${ctxDept}", page_visited="${ctxPage}"
+
+Input:
+${input.slice(0, 9500)}`,
           config: {
             systemInstruction: UNIFIED_ASSISTANT_SYSTEM_PROMPT,
             responseMimeType: 'application/json',
@@ -369,7 +635,7 @@ PIC Verified Discovery Scope Notes: ${scopeNotes || 'Standard annual statutory c
               properties: {
                 mode: {
                   type: Type.STRING,
-                  enum: ['LEAD_TRIAGE', 'QUOTATION_GENERATION'],
+                  enum: ['LEAD_TRIAGE', 'QUOTATION_GENERATION', 'AUDIT_LOG_EVENT'],
                 },
                 lead_profile: {
                   type: Type.OBJECT,
@@ -459,6 +725,39 @@ PIC Verified Discovery Scope Notes: ${scopeNotes || 'Standard annual statutory c
                     'total_annual_recurring_myr',
                   ],
                 },
+                audit_event: {
+                  type: Type.OBJECT,
+                  properties: {
+                    log_id: { type: Type.STRING },
+                    timestamp: { type: Type.STRING },
+                    user_name: { type: Type.STRING },
+                    user_email: { type: Type.STRING },
+                    user_role: {
+                      type: Type.STRING,
+                      enum: ['administrator', 'user'],
+                    },
+                    department: {
+                      type: Type.STRING,
+                      enum: ['Co Sec', 'Accounting', 'Audit', 'Tax', 'Payroll', 'Finance'],
+                    },
+                    page_visited: { type: Type.STRING },
+                    action_taken: { type: Type.STRING },
+                    target_id: { type: Type.STRING },
+                    action_details: { type: Type.STRING },
+                  },
+                  required: [
+                    'log_id',
+                    'timestamp',
+                    'user_name',
+                    'user_email',
+                    'user_role',
+                    'department',
+                    'page_visited',
+                    'action_taken',
+                    'target_id',
+                    'action_details',
+                  ],
+                },
                 client_reply_draft: { type: Type.STRING },
               },
               required: [
@@ -466,6 +765,7 @@ PIC Verified Discovery Scope Notes: ${scopeNotes || 'Standard annual statutory c
                 'lead_profile',
                 'routing',
                 'quotation',
+                'audit_event',
                 'client_reply_draft',
               ],
             },
@@ -480,6 +780,7 @@ PIC Verified Discovery Scope Notes: ${scopeNotes || 'Standard annual statutory c
       }
 
       const parsed = JSON.parse(rawText) as {
+        mode?: string;
         routing?: { sla_days_limit?: number };
         quotation?: {
           validity_days?: number;
@@ -489,6 +790,7 @@ PIC Verified Discovery Scope Notes: ${scopeNotes || 'Standard annual statutory c
           total_monthly_recurring_myr?: number;
           total_annual_recurring_myr?: number;
         };
+        audit_event?: Partial<ImmutableAuditRecord>;
       };
 
       // Guarantee exact arithmetic subtotals, 4-working-day SLA target, and 30-day default validity
@@ -523,6 +825,30 @@ PIC Verified Discovery Scope Notes: ${scopeNotes || 'Standard annual statutory c
           parsed.quotation.total_annual_recurring_myr = Math.round(annual * 100) / 100;
         }
       }
+
+      // Normalize & persist immutable audit_event in Asia/Kuala_Lumpur (UTC+8)
+      const defaultAction =
+        parsed.mode === 'QUOTATION_GENERATION'
+          ? 'GENERATE_QUOTATION'
+          : parsed.mode === 'LEAD_TRIAGE'
+            ? 'TRIAGE_INBOUND_LEAD'
+            : 'VIEW_PAGE';
+
+      const persistedEvent = appendImmutableAuditLog({
+        log_id: nextLogId,
+        timestamp: klTimestamp,
+        user_name: ctxName,
+        user_email: ctxEmail,
+        user_role: ctxRole,
+        department: ctxDept,
+        page_visited: ctxPage,
+        action_taken: parsed.audit_event?.action_taken || defaultAction,
+        target_id: parsed.audit_event?.target_id || '—',
+        action_details:
+          parsed.audit_event?.action_details ||
+          `Executed Intelligence Assistant (${parsed.mode || 'LEAD_TRIAGE'}).`,
+      });
+      parsed.audit_event = persistedEvent;
 
       res.json({ result: parsed });
     } catch (error) {

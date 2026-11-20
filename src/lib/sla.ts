@@ -113,12 +113,41 @@ export function formatDateTime(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '—';
   return d.toLocaleString('en-MY', {
+    timeZone: 'Asia/Kuala_Lumpur',
     day: '2-digit',
     month: 'short',
     year: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
+    second: '2-digit',
   });
+}
+
+/**
+ * Formats a Date into precise ISO 8601 in Asia/Kuala_Lumpur (UTC+8),
+ * e.g. 2026-11-20T14:35:07.123+08:00
+ */
+export function formatKualaLumpurIso(date: Date = new Date()): string {
+  const klMs = date.getTime() + 8 * 60 * 60 * 1000;
+  const kl = new Date(klMs);
+  const y = kl.getUTCFullYear();
+  const m = String(kl.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(kl.getUTCDate()).padStart(2, '0');
+  const hh = String(kl.getUTCHours()).padStart(2, '0');
+  const mm = String(kl.getUTCMinutes()).padStart(2, '0');
+  const ss = String(kl.getUTCSeconds()).padStart(2, '0');
+  const ms = String(kl.getUTCMilliseconds()).padStart(3, '0');
+  return `${y}-${m}-${d}T${hh}:${mm}:${ss}.${ms}+08:00`;
+}
+
+export function generateAuditLogId(existingCount: number, date: Date = new Date()): string {
+  const klMs = date.getTime() + 8 * 60 * 60 * 1000;
+  const kl = new Date(klMs);
+  const y = kl.getUTCFullYear();
+  const m = String(kl.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(kl.getUTCDate()).padStart(2, '0');
+  const seq = String(existingCount + 1).padStart(3, '0');
+  return `LOG-${y}${m}${d}-${seq}`;
 }
 
 export function generateSafeId(prefix: string): string {
@@ -128,15 +157,13 @@ export function generateSafeId(prefix: string): string {
 }
 
 export function generateLeadCode(existingCount: number): string {
-  const year = new Date().getFullYear();
   const seq = String(existingCount + 1).padStart(4, '0');
-  return `TJW-LD-${year}-${seq}`;
+  return `LEAD-${seq}`;
 }
 
 export function generateQuoteNumber(existingCount: number): string {
-  const year = new Date().getFullYear();
   const seq = String(existingCount + 1).padStart(4, '0');
-  return `TJW-QT-${year}-${seq}`;
+  return `QT-${seq}`;
 }
 
 export const DEFAULT_VALIDITY_DAYS = 30;
