@@ -108,8 +108,9 @@ export function AssistantWorkbench({
             Triage, SLA Routing &amp; Quotation Assistant
           </h2>
           <p className="text-xs text-neutral-500 leading-relaxed">
-            Auto-detects inbound client inquiries (Task 1: Lead Triage) or confirmed PIC discovery
-            notes (Task 2: MYR Quotation Generation) across all 6 corporate service lines.
+            Auto-detects inbound client inquiries (Lead Triage), confirmed PIC discovery notes
+            (MYR Quotation Generation), compliance audit queries, or Danger Zone governance actions
+            across all 6 corporate service lines.
           </p>
         </div>
 
@@ -361,6 +362,31 @@ export function AssistantWorkbench({
                         </tbody>
                       </table>
                     </div>
+                  </div>
+                )}
+
+                {/* Danger Zone Governance Event (when applicable) */}
+                {result.mode === 'DANGER_ZONE_ACTION' && result.danger_zone_event && (
+                  <div className="p-3.5 bg-[#CB3737]/5 border border-[#CB3737]/25 rounded-lg space-y-1 text-xs">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="font-semibold text-[#CB3737]">
+                        Danger Zone Event: {result.danger_zone_event.action_type}
+                      </p>
+                      <span
+                        className={`font-mono font-bold ${
+                          result.danger_zone_event.status === 'APPROVED'
+                            ? 'text-emerald-700'
+                            : 'text-[#CB3737]'
+                        }`}
+                      >
+                        {result.danger_zone_event.status}
+                      </span>
+                    </div>
+                    <p className="text-neutral-700">{result.danger_zone_event.details}</p>
+                    <p className="text-[11px] text-neutral-500 font-mono">
+                      Target: {result.danger_zone_event.target_user_email || '—'} · Approved by:{' '}
+                      {result.danger_zone_event.approved_by_admin || 'Requires System Administrator'}
+                    </p>
                   </div>
                 )}
 

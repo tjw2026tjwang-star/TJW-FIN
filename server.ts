@@ -216,6 +216,10 @@ You handle inbound client inquiries, quotation generation, and operational compl
   * 'executive' (Finance only): Full operational access and Step 6 quotation drafting/editing; cannot approve quotations, amend validity, or export audit logs.
   * 'user': Operational Steps 1–4 intake, SLA contact tracking, and scope logging only; cannot draft quotations, approve quotations, or export audit logs.
 - IMMUTABLE APPEND-ONLY AUDIT TRAIL: Nobody, including Administrators, can delete, purge, alter, or truncate audit log records.
+- DANGER ZONE & 2FA GOVERNANCE:
+  * Danger Zone actions (2FA_OVERRIDE, ARCHIVE_LEAD, VOID_QUOTATION) are exclusively permitted for Finance Department 'administrator' role.
+  * Staff 2FA status, recovery keys, or authenticator bindings MUST NEVER be changed, reset, bypassed, or disabled unless explicitly approved and performed by a Finance 'administrator'.
+  * If a 'user' or 'executive' requests a Danger Zone / 2FA override action, return mode = "DANGER_ZONE_ACTION" with danger_zone_event.status = "REJECTED" and approved_by_admin = "".
 - SECURITY SESSION TIMEOUT: Active staff sessions automatically terminate after 10 continuous minutes (600,000 ms) of inactivity, clearing tjw_session and recording SESSION_TIMEOUT_IDLE.
 
 Always return strictly valid JSON matching the provided schema.`;
@@ -657,7 +661,12 @@ ${input.slice(0, 9500)}`,
               properties: {
                 mode: {
                   type: Type.STRING,
-                  enum: ['LEAD_TRIAGE', 'QUOTATION_GENERATION', 'AUDIT_LOG_EVENT'],
+                  enum: [
+                    'LEAD_TRIAGE',
+                    'QUOTATION_GENERATION',
+                    'AUDIT_LOG_EVENT',
+                    'DANGER_ZONE_ACTION',
+                  ],
                 },
                 lead_profile: {
                   type: Type.OBJECT,
@@ -747,6 +756,29 @@ ${input.slice(0, 9500)}`,
                     'total_annual_recurring_myr',
                   ],
                 },
+                danger_zone_event: {
+                  type: Type.OBJECT,
+                  properties: {
+                    action_type: {
+                      type: Type.STRING,
+                      enum: ['2FA_OVERRIDE', 'ARCHIVE_LEAD', 'VOID_QUOTATION'],
+                    },
+                    target_user_email: { type: Type.STRING },
+                    approved_by_admin: { type: Type.STRING },
+                    status: {
+                      type: Type.STRING,
+                      enum: ['APPROVED', 'REJECTED'],
+                    },
+                    details: { type: Type.STRING },
+                  },
+                  required: [
+                    'action_type',
+                    'target_user_email',
+                    'approved_by_admin',
+                    'status',
+                    'details',
+                  ],
+                },
                 audit_event: {
                   type: Type.OBJECT,
                   properties: {
@@ -787,6 +819,7 @@ ${input.slice(0, 9500)}`,
                 'lead_profile',
                 'routing',
                 'quotation',
+                'danger_zone_event',
                 'audit_event',
                 'client_reply_draft',
               ],
@@ -811,6 +844,13 @@ ${input.slice(0, 9500)}`,
           total_setup_fee_myr?: number;
           total_monthly_recurring_myr?: number;
           total_annual_recurring_myr?: number;
+        };
+        danger_zone_event?: {
+          action_type?: '2FA_OVERRIDE' | 'ARCHIVE_LEAD' | 'VOID_QUOTATION';
+          target_user_email?: string;
+          approved_by_admin?: string;
+          status?: 'APPROVED' | 'REJECTED';
+          details?: string;
         };
         audit_event?: Partial<ImmutableAuditRecord>;
       };
@@ -839,13 +879,27 @@ ${input.slice(0, 9500)}`,
         }
       }
 
+      // Enforce Administrator-only Danger Zone & 2FA approval gate server-side
+      if (parsed.mode === 'DANGER_ZONE_ACTION' && parsed.danger_zone_event) {
+        if (ctxRole !== 'administrator' || ctxDept !== 'Finance') {
+          parsed.danger_zone_event.status = 'REJECTED';
+          parsed.danger_zone_event.approved_by_admin = '';
+          parsed.danger_zone_event.details =
+            'Rejected: Danger Zone and 2FA actions are strictly restricted to Finance Department Administrators.';
+        } else if (parsed.danger_zone_event.status === 'APPROVED') {
+          parsed.danger_zone_event.approved_by_admin = `${ctxName} (${ctxEmail})`;
+        }
+      }
+
       // Normalize & persist immutable audit_event in Asia/Kuala_Lumpur (UTC+8)
       const defaultAction =
         parsed.mode === 'QUOTATION_GENERATION'
           ? 'GENERATE_QUOTATION'
           : parsed.mode === 'LEAD_TRIAGE'
             ? 'TRIAGE_INBOUND_LEAD'
-            : 'VIEW_PAGE';
+            : parsed.mode === 'DANGER_ZONE_ACTION'
+              ? 'DANGER_ZONE_2FA_OVERRIDE'
+              : 'VIEW_PAGE';
 
       const persistedEvent = appendImmutableAuditLog({
         log_id: nextLogId,

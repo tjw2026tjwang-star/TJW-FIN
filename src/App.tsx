@@ -23,6 +23,7 @@ import {
   type OutreachChannel,
   type Quotation,
   type QuotationLineItem,
+  type StaffSecurityProfile,
   type UserSession,
   type WorkflowStage,
 } from './types';
@@ -31,10 +32,12 @@ import {
   loadLeads,
   loadQuotations,
   loadSession,
+  loadStaffSecurityProfiles,
   saveAuditLog,
   saveLeads,
   saveQuotations,
   saveSession,
+  saveStaffSecurityProfiles,
 } from './lib/storage';
 import {
   computeValidUntilDate,
@@ -63,8 +66,9 @@ import { LeadDetailDrawer, type EditLeadTriagePayload } from './components/LeadD
 import { QuotationWorkbench } from './components/QuotationWorkbench';
 import { AuditLogView } from './components/AuditLogView';
 import { AssistantWorkbench } from './components/AssistantWorkbench';
+import { SecuritySettingsView } from './components/SecuritySettingsView';
 
-type ActiveScreen = 'leads' | 'quotations' | 'assistant' | 'audit';
+type ActiveScreen = 'leads' | 'quotations' | 'assistant' | 'audit' | 'settings';
 
 const IDLE_TIMEOUT_MS = 10 * 60 * 1000; // 10 continuous minutes (600,000 ms)
 const IDLE_RESET_THROTTLE_MS = 1000;
@@ -75,6 +79,7 @@ const SCREEN_PAGE_NAMES: Record<ActiveScreen, string> = {
   quotations: 'Quotation Workbench',
   assistant: 'AI Intelligence Assistant',
   audit: 'Audit Trail View',
+  settings: 'Security & Settings',
 };
 
 export default function App() {
@@ -83,6 +88,9 @@ export default function App() {
   const [leads, setLeads] = useState<Lead[]>(() => loadLeads());
   const [quotations, setQuotations] = useState<Quotation[]>(() => loadQuotations());
   const [auditEntries, setAuditEntries] = useState<AuditEntry[]>(() => loadAuditLog());
+  const [staffProfiles, setStaffProfiles] = useState<StaffSecurityProfile[]>(() =>
+    loadStaffSecurityProfiles()
+  );
 
   const [activeScreen, setActiveScreen] = useState<ActiveScreen>('leads');
   const [activeDeptFilter, setActiveDeptFilter] = useState<'ALL' | Department>('ALL');
@@ -124,6 +132,56 @@ export default function App() {
   useEffect(() => {
     saveAuditLog(auditEntries);
   }, [auditEntries]);
+
+  useEffect(() => {
+    saveStaffSecurityProfiles(staffProfiles);
+  }, [staffProfiles]);
+
+  // Register real active session in staff security registry (never seeds mock users)
+  const registerRealStaffProfile = useCallback((activeSession: UserSession) => {
+    const emailKey = activeSession.email.trim().toLowerCase();
+    if (!emailKey) return;
+    const nowIso = new Date().toISOString();
+    setStaffProfiles((prev) => {
+      const existing = prev.find((p) => p.email.toLowerCase() === emailKey);
+      if (existing) {
+        return prev.map((p) =>
+          p.email.toLowerCase() === emailKey
+            ? {
+                ...p,
+                name: activeSession.name,
+                department: activeSession.department,
+                role: normalizeSessionRole(activeSession.department, activeSession.role),
+                lastSignedInAt: nowIso,
+              }
+            : p
+        );
+      }
+      const created: StaffSecurityProfile = {
+        email: emailKey,
+        name: activeSession.name,
+        department: activeSession.department,
+        role: normalizeSessionRole(activeSession.department, activeSession.role),
+        twoFactorStatus: 'Enrolled',
+        twoFactorMethod: 'Authenticator App (TOTP)',
+        twoFactorEnrolledAt: nowIso,
+        recoveryCodesRemaining: 8,
+        resetRequestPending: false,
+        resetRequestReason: '',
+        resetRequestedAt: '',
+        lastResetBy: '',
+        lastResetAt: '',
+        lastSignedInAt: nowIso,
+      };
+      return [created, ...prev];
+    });
+  }, []);
+
+  useEffect(() => {
+    if (session) {
+      registerRealStaffProfile(session);
+    }
+  }, [session, registerRealStaffProfile]);
 
   const syncAuditLogsFromServer = async () => {
     try {
@@ -1002,6 +1060,141 @@ export default function App() {
     );
   };
 
+  // Security Settings: Staff submits 2FA reset request (cannot modify 2FA themselves)
+  const handleRequestOwn2faReset = (reason: string) => {
+    if (!session) return;
+    const emailKey = session.email.trim().toLowerCase();
+    const nowIso = formatKualaLumpurIso();
+    setStaffProfiles((prev) =>
+      prev.map((p) =>
+        p.email.toLowerCase() === emailKey
+          ? {
+              ...p,
+              resetRequestPending: true,
+              resetRequestReason: reason,
+              resetRequestedAt: nowIso,
+            }
+          : p
+      )
+    );
+    appendAudit(
+      session,
+      'Security & Settings',
+      'REQUEST_2FA_RESET',
+      emailKey,
+      `Staff member ${session.name} (${emailKey}) submitted a 2FA reset request for System Administrator review: "${reason}".`
+    );
+  };
+
+  // Danger Zone (Finance Administrator Only): Approve & Execute 2FA Reset / Re-Enrollment
+  const handleAdminApprove2faOverride = (
+    targetEmail: string,
+    mode: 'RESET_REENROLL' | 'COMPLETE_ENROLLMENT',
+    verificationNote: string
+  ) => {
+    if (!session || !isAdministratorSession(session)) return;
+    const emailKey = targetEmail.trim().toLowerCase();
+    const nowIso = formatKualaLumpurIso();
+    const adminLabel = `${session.name} (${session.email})`;
+
+    setStaffProfiles((prev) =>
+      prev.map((p) =>
+        p.email.toLowerCase() === emailKey
+          ? {
+              ...p,
+              twoFactorStatus:
+                mode === 'RESET_REENROLL' ? 'Re-Enrollment Required' : 'Enrolled',
+              twoFactorEnrolledAt:
+                mode === 'COMPLETE_ENROLLMENT' ? nowIso : p.twoFactorEnrolledAt,
+              recoveryCodesRemaining: mode === 'RESET_REENROLL' ? 0 : 8,
+              resetRequestPending: false,
+              resetRequestReason: '',
+              resetRequestedAt: '',
+              lastResetBy: adminLabel,
+              lastResetAt: nowIso,
+            }
+          : p
+      )
+    );
+
+    appendAudit(
+      session,
+      'Security & Settings (Danger Zone)',
+      'DANGER_ZONE_2FA_OVERRIDE',
+      emailKey,
+      `System Administrator approved and executed 2FA re-enrollment/reset for staff member: ${emailKey} | Mode: ${mode} | Verification: ${verificationNote}`
+    );
+  };
+
+  // Danger Zone (Finance Administrator Only): Void Stalled Quotation (Audit Trail Protected)
+  const handleAdminVoidQuotation = (quotationId: string, reason: string) => {
+    if (!session || !isAdministratorSession(session)) return;
+    const existing = quotations.find((q) => q.id === quotationId);
+    if (!existing || existing.status === 'Dispatched' || existing.status === 'Voided') return;
+    const nowIso = formatKualaLumpurIso();
+    const adminLabel = `${session.name} (${session.email})`;
+
+    setQuotations((prev) =>
+      prev.map((q) =>
+        q.id === quotationId
+          ? {
+              ...q,
+              status: 'Voided',
+              isApproved: false,
+              voidedAt: nowIso,
+              voidedBy: adminLabel,
+              voidReason: reason,
+              updatedAt: nowIso,
+            }
+          : q
+      )
+    );
+
+    appendAudit(
+      session,
+      'Security & Settings (Danger Zone)',
+      'DANGER_ZONE_VOID_QUOTATION',
+      existing.quoteNumber,
+      `System Administrator ${adminLabel} voided quotation ${existing.quoteNumber} for ${existing.companyName}. Reason: ${reason}`
+    );
+  };
+
+  // Danger Zone (Finance Administrator Only): Archive Lead (Audit Trail Protected)
+  const handleAdminArchiveLead = (leadId: string, reason: string) => {
+    if (!session || !isAdministratorSession(session)) return;
+    const existing = leads.find((l) => l.id === leadId);
+    if (!existing || existing.archived) return;
+    const nowIso = formatKualaLumpurIso();
+    const adminLabel = `${session.name} (${session.email})`;
+
+    setLeads((prev) =>
+      prev.map((l) =>
+        l.id === leadId
+          ? {
+              ...l,
+              archived: true,
+              archivedAt: nowIso,
+              archivedBy: adminLabel,
+              archiveReason: reason,
+              updatedAt: nowIso,
+            }
+          : l
+      )
+    );
+
+    if (selectedLeadId === leadId) {
+      setSelectedLeadId(null);
+    }
+
+    appendAudit(
+      session,
+      'Security & Settings (Danger Zone)',
+      'DANGER_ZONE_ARCHIVE_LEAD',
+      existing.leadCode,
+      `System Administrator ${adminLabel} archived lead ${existing.leadCode} (${existing.companyName}). Reason: ${reason}`
+    );
+  };
+
   // Derived indexes & SLA metrics
   const leadsById = useMemo(() => {
     const map: Record<string, Lead> = {};
@@ -1026,8 +1219,9 @@ export default function App() {
   }, [leads]);
 
   const deptScopedLeads = useMemo(() => {
-    if (activeDeptFilter === 'ALL') return leads;
-    return leads.filter(
+    const activeOnly = leads.filter((l) => !l.archived);
+    if (activeDeptFilter === 'ALL') return activeOnly;
+    return activeOnly.filter(
       (l) => l.targetDept === activeDeptFilter || l.secondaryDepts.includes(activeDeptFilter)
     );
   }, [leads, activeDeptFilter]);
@@ -1046,12 +1240,15 @@ export default function App() {
   );
 
   const pendingApprovalsCount = useMemo(
-    () => deptScopedQuotations.filter((q) => !q.isApproved).length,
+    () => deptScopedQuotations.filter((q) => !q.isApproved && q.status !== 'Voided').length,
     [deptScopedQuotations]
   );
 
   const totalPipelineMyr = useMemo(
-    () => deptScopedQuotations.reduce((sum, q) => sum + q.totalYearOneMyr, 0),
+    () =>
+      deptScopedQuotations
+        .filter((q) => q.status !== 'Voided')
+        .reduce((sum, q) => sum + q.totalYearOneMyr, 0),
     [deptScopedQuotations]
   );
 
@@ -1103,6 +1300,7 @@ export default function App() {
                   { id: 'quotations', label: 'Quotations', count: deptScopedQuotations.length },
                   { id: 'assistant', label: 'AI Assistant', count: null },
                   { id: 'audit', label: 'Audit Log', count: auditEntries.length },
+                  { id: 'settings', label: 'Settings', count: null },
                 ] as const
               ).map((tab) => {
                 const active = activeScreen === tab.id;
@@ -1196,6 +1394,7 @@ export default function App() {
                 { id: 'quotations', label: 'Quotations' },
                 { id: 'assistant', label: 'AI Assistant' },
                 { id: 'audit', label: 'Audit' },
+                { id: 'settings', label: 'Settings' },
               ] as const
             ).map((tab) => (
               <button
@@ -1567,6 +1766,20 @@ export default function App() {
             entries={auditEntries}
             session={session}
             onSyncServerLogs={syncAuditLogsFromServer}
+          />
+        )}
+
+        {/* SCREEN 6: SECURITY SETTINGS & ADMINISTRATOR-ONLY DANGER ZONE */}
+        {activeScreen === 'settings' && (
+          <SecuritySettingsView
+            session={session}
+            staffProfiles={staffProfiles}
+            leads={leads}
+            quotations={quotations}
+            onRequestOwn2faReset={handleRequestOwn2faReset}
+            onAdminApprove2faOverride={handleAdminApprove2faOverride}
+            onAdminVoidQuotation={handleAdminVoidQuotation}
+            onAdminArchiveLead={handleAdminArchiveLead}
           />
         )}
       </main>

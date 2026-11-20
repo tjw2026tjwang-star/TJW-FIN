@@ -128,9 +128,12 @@ export function QuotationWorkbench({
   const liveTotals = useMemo(() => computeQuotationTotals(lineItems), [lineItems]);
 
   const isDispatched = selected?.status === 'Dispatched';
+  const isVoided = selected?.status === 'Voided';
   const isAdministrator = isAdministratorSession(session);
   const canDraftQuotation = canDraftQuotationSession(session);
-  const canEditDraft = Boolean(canDraftQuotation && selected && !selected.isApproved && !isDispatched);
+  const canEditDraft = Boolean(
+    canDraftQuotation && selected && !selected.isApproved && !isDispatched && !isVoided
+  );
   const isLockedFromEdit = !canEditDraft || !editingDraft;
 
   const activeValidityDays = selected?.validityDays || DEFAULT_VALIDITY_DAYS;
@@ -271,6 +274,7 @@ export function QuotationWorkbench({
   };
 
   const statusTone = (status: QuotationStatus) => {
+    if (status === 'Voided') return 'text-neutral-400 line-through font-medium';
     if (status === 'Dispatched') return 'text-[#171717] font-semibold';
     if (status === 'Approved') return 'text-emerald-700 font-semibold';
     return 'text-[#EE6F57] font-semibold';
@@ -281,7 +285,7 @@ export function QuotationWorkbench({
       {/* Status filter bar */}
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-1 p-1 bg-white border border-[#E3E3E3] rounded-lg overflow-x-auto">
-          {(['All', 'Pending Approval', 'Approved', 'Dispatched'] as const).map((tab) => (
+          {(['All', 'Pending Approval', 'Approved', 'Dispatched', 'Voided'] as const).map((tab) => (
             <button
               key={tab}
               type="button"
@@ -620,7 +624,11 @@ export function QuotationWorkbench({
                     ) : (
                       <span className="inline-flex items-center gap-1 text-xs text-neutral-500 font-medium">
                         <Lock className="w-3.5 h-3.5" />
-                        {isDispatched ? 'Locked after dispatch' : 'Locked while approved'}
+                        {isVoided
+                          ? 'Voided in Danger Zone'
+                          : isDispatched
+                            ? 'Locked after dispatch'
+                            : 'Locked while approved'}
                       </span>
                     )}
                   </div>
@@ -874,7 +882,7 @@ export function QuotationWorkbench({
                   >
                     <label
                       className={`flex items-start gap-3 text-xs ${
-                        isAdministrator && !isDispatched
+                        isAdministrator && !isDispatched && !isVoided
                           ? 'cursor-pointer text-[#171717]'
                           : 'cursor-not-allowed text-neutral-500'
                       }`}
@@ -882,9 +890,9 @@ export function QuotationWorkbench({
                       <input
                         type="checkbox"
                         checked={selected.isApproved}
-                        disabled={!isAdministrator || isDispatched}
+                        disabled={!isAdministrator || isDispatched || isVoided}
                         onChange={(e) => {
-                          if (!isAdministrator || isDispatched) return;
+                          if (!isAdministrator || isDispatched || isVoided) return;
                           if (hasUnsavedEdits) {
                             onUpdateQuotationContent(selected.id, {
                               lineItems,
@@ -965,7 +973,7 @@ export function QuotationWorkbench({
                   <div className="flex flex-wrap items-center gap-3">
                     <button
                       type="button"
-                      disabled={!selected.isApproved}
+                      disabled={!selected.isApproved || isVoided}
                       onClick={() => handleDispatch('Email')}
                       className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-[#CB3737] hover:bg-[#B02D2D] rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
                     >
@@ -975,7 +983,7 @@ export function QuotationWorkbench({
 
                     <button
                       type="button"
-                      disabled={!selected.isApproved}
+                      disabled={!selected.isApproved || isVoided}
                       onClick={() => handleDispatch('WhatsApp')}
                       className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-[#171717] bg-white border border-[#E3E3E3] hover:bg-[#FAFAFA] rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
                     >

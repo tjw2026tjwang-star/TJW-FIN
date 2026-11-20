@@ -28,6 +28,10 @@ const ACTION_LABELS: Record<AuditAction, string> = {
   DISPATCH_QUOTATION: 'DISPATCH_QUOTATION',
   EXPORT_AUDIT_LOG: 'EXPORT_AUDIT_LOG',
   SESSION_TIMEOUT_IDLE: 'SESSION_TIMEOUT_IDLE',
+  REQUEST_2FA_RESET: 'REQUEST_2FA_RESET',
+  DANGER_ZONE_2FA_OVERRIDE: 'DANGER_ZONE_2FA_OVERRIDE',
+  DANGER_ZONE_ARCHIVE_LEAD: 'DANGER_ZONE_ARCHIVE_LEAD',
+  DANGER_ZONE_VOID_QUOTATION: 'DANGER_ZONE_VOID_QUOTATION',
 };
 
 export function AuditLogView({ entries, session, onSyncServerLogs }: AuditLogViewProps) {
@@ -109,7 +113,10 @@ export function AuditLogView({ entries, session, onSyncServerLogs }: AuditLogVie
     if (
       action === 'AMEND_QUOTATION_VALIDITY' ||
       action === 'EXPORT_AUDIT_LOG' ||
-      action === 'SESSION_TIMEOUT_IDLE'
+      action === 'SESSION_TIMEOUT_IDLE' ||
+      action === 'DANGER_ZONE_2FA_OVERRIDE' ||
+      action === 'DANGER_ZONE_ARCHIVE_LEAD' ||
+      action === 'DANGER_ZONE_VOID_QUOTATION'
     ) {
       return 'text-[#CB3737]';
     }
@@ -118,7 +125,8 @@ export function AuditLogView({ entries, session, onSyncServerLogs }: AuditLogVie
       action === 'EDIT_LEAD_TRIAGE' ||
       action === 'EDIT_CONTACT_STATUS' ||
       action === 'GENERATE_QUOTATION' ||
-      action === 'EDIT_QUOTATION_DRAFT'
+      action === 'EDIT_QUOTATION_DRAFT' ||
+      action === 'REQUEST_2FA_RESET'
     ) {
       return 'text-[#EE6F57]';
     }

@@ -3,6 +3,7 @@ import {
   type AuditEntry,
   type Lead,
   type Quotation,
+  type StaffSecurityProfile,
   type UserSession,
 } from '../types';
 
@@ -11,6 +12,7 @@ const STORAGE_KEYS = {
   leads: 'tjw_finance_leads_v1',
   quotations: 'tjw_finance_quotations_v1',
   audit: 'tjw_finance_audit_v2',
+  staffSecurity: 'tjw_finance_staff_security_v1',
 } as const;
 
 const LEGACY_SESSION_KEY = 'tjw_finance_session_v1';
@@ -97,4 +99,25 @@ export function saveAuditLog(entries: AuditEntry[]): void {
     b.timestamp.localeCompare(a.timestamp)
   );
   safeWrite(STORAGE_KEYS.audit, merged);
+}
+
+export function loadStaffSecurityProfiles(): StaffSecurityProfile[] {
+  const raw = safeRead<StaffSecurityProfile[]>(STORAGE_KEYS.staffSecurity, []);
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((p) => p && typeof p.email === 'string' && p.email.trim().length > 0)
+    .map((p) => ({
+      ...p,
+      role: normalizeSessionRole(p.department, p.role),
+    }));
+}
+
+export function saveStaffSecurityProfiles(profiles: StaffSecurityProfile[]): void {
+  safeWrite(
+    STORAGE_KEYS.staffSecurity,
+    profiles.map((p) => ({
+      ...p,
+      role: normalizeSessionRole(p.department, p.role),
+    }))
+  );
 }

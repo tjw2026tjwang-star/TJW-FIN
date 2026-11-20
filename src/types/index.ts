@@ -35,7 +35,7 @@ export type WorkflowStage =
   | 'Dispatched'
   | 'Unreachable';
 
-export type QuotationStatus = 'Pending Approval' | 'Approved' | 'Dispatched';
+export type QuotationStatus = 'Pending Approval' | 'Approved' | 'Dispatched' | 'Voided';
 
 export type BillingFrequency = 'One-off' | 'Monthly' | 'Annual';
 
@@ -54,7 +54,11 @@ export type AuditAction =
   | 'APPROVE_QUOTATION'
   | 'DISPATCH_QUOTATION'
   | 'EXPORT_AUDIT_LOG'
-  | 'SESSION_TIMEOUT_IDLE';
+  | 'SESSION_TIMEOUT_IDLE'
+  | 'REQUEST_2FA_RESET'
+  | 'DANGER_ZONE_2FA_OVERRIDE'
+  | 'DANGER_ZONE_ARCHIVE_LEAD'
+  | 'DANGER_ZONE_VOID_QUOTATION';
 
 export const DEPARTMENTS: Department[] = [
   'Co Sec',
@@ -171,8 +175,35 @@ export interface AuditEntry {
   action_details: string;
 }
 
+export type TwoFactorStatus = 'Enrolled' | 'Re-Enrollment Required';
+
+export interface StaffSecurityProfile {
+  email: string;
+  name: string;
+  department: Department;
+  role: UserRole;
+  twoFactorStatus: TwoFactorStatus;
+  twoFactorMethod: string;
+  twoFactorEnrolledAt: string;
+  recoveryCodesRemaining: number;
+  resetRequestPending: boolean;
+  resetRequestReason: string;
+  resetRequestedAt: string;
+  lastResetBy: string;
+  lastResetAt: string;
+  lastSignedInAt: string;
+}
+
+export interface DangerZoneEvent {
+  action_type: '2FA_OVERRIDE' | 'ARCHIVE_LEAD' | 'VOID_QUOTATION';
+  target_user_email: string;
+  approved_by_admin: string;
+  status: 'APPROVED' | 'REJECTED';
+  details: string;
+}
+
 export interface AssistantResponse {
-  mode: 'LEAD_TRIAGE' | 'QUOTATION_GENERATION' | 'AUDIT_LOG_EVENT';
+  mode: 'LEAD_TRIAGE' | 'QUOTATION_GENERATION' | 'AUDIT_LOG_EVENT' | 'DANGER_ZONE_ACTION';
   lead_profile: {
     company_name: string;
     contact_person: string;
@@ -194,6 +225,7 @@ export interface AssistantResponse {
     total_monthly_recurring_myr: number;
     total_annual_recurring_myr: number;
   };
+  danger_zone_event: DangerZoneEvent;
   audit_event: AuditEntry;
   client_reply_draft: string;
 }
@@ -226,6 +258,10 @@ export interface Lead {
   lastReminderAt: string;
   scope: LeadScope;
   workflowStage: WorkflowStage;
+  archived?: boolean;
+  archivedAt?: string;
+  archivedBy?: string;
+  archiveReason?: string;
   createdByName: string;
   updatedAt: string;
 }
@@ -265,6 +301,9 @@ export interface Quotation {
   dispatchChannel: DispatchChannel;
   dispatchedAt: string;
   dispatchedBy: string;
+  voidedAt?: string;
+  voidedBy?: string;
+  voidReason?: string;
   createdByName: string;
   createdAt: string;
   updatedAt: string;
