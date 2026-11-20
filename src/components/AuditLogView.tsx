@@ -22,6 +22,7 @@ const ACTION_LABELS: Record<AuditAction, string> = {
   APPROVE_QUOTATION: 'APPROVE_QUOTATION',
   DISPATCH_QUOTATION: 'DISPATCH_QUOTATION',
   EXPORT_AUDIT_LOG: 'EXPORT_AUDIT_LOG',
+  SESSION_TIMEOUT_IDLE: 'SESSION_TIMEOUT_IDLE',
 };
 
 export function AuditLogView({ entries, session, onSyncServerLogs }: AuditLogViewProps) {
@@ -100,7 +101,11 @@ export function AuditLogView({ entries, session, onSyncServerLogs }: AuditLogVie
     if (action === 'APPROVE_QUOTATION' || action === 'DISPATCH_QUOTATION') {
       return 'text-emerald-700';
     }
-    if (action === 'AMEND_QUOTATION_VALIDITY' || action === 'EXPORT_AUDIT_LOG') {
+    if (
+      action === 'AMEND_QUOTATION_VALIDITY' ||
+      action === 'EXPORT_AUDIT_LOG' ||
+      action === 'SESSION_TIMEOUT_IDLE'
+    ) {
       return 'text-[#CB3737]';
     }
     if (

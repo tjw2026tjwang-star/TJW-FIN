@@ -1,11 +1,13 @@
 import type { AuditEntry, Lead, Quotation, UserSession } from '../types';
 
 const STORAGE_KEYS = {
-  session: 'tjw_finance_session_v1',
+  session: 'tjw_session',
   leads: 'tjw_finance_leads_v1',
   quotations: 'tjw_finance_quotations_v1',
   audit: 'tjw_finance_audit_v2',
 } as const;
+
+const LEGACY_SESSION_KEY = 'tjw_finance_session_v1';
 
 function safeRead<T>(key: string, fallback: T): T {
   try {
@@ -32,7 +34,8 @@ export function loadSession(): UserSession | null {
 export function saveSession(session: UserSession | null): void {
   if (!session) {
     try {
-      window.localStorage.removeItem(STORAGE_KEYS.session);
+      window.localStorage.removeItem('tjw_session');
+      window.localStorage.removeItem(LEGACY_SESSION_KEY);
     } catch {
       // ignore
     }

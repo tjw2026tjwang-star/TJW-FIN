@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   LogOut,
@@ -62,8 +62,20 @@ import { AssistantWorkbench } from './components/AssistantWorkbench';
 
 type ActiveScreen = 'leads' | 'quotations' | 'assistant' | 'audit';
 
+const IDLE_TIMEOUT_MS = 10 * 60 * 1000; // 10 continuous minutes (600,000 ms)
+const IDLE_RESET_THROTTLE_MS = 1000;
+const IDLE_TIMEOUT_NOTICE =
+  'You have been logged out due to 10 minutes of inactivity for security compliance.';
+const SCREEN_PAGE_NAMES: Record<ActiveScreen, string> = {
+  leads: 'Leads Pipeline',
+  quotations: 'Quotation Workbench',
+  assistant: 'AI Intelligence Assistant',
+  audit: 'Audit Trail View',
+};
+
 export default function App() {
   const [session, setSession] = useState<UserSession | null>(() => loadSession());
+  const [sessionTimeoutNotice, setSessionTimeoutNotice] = useState<string | null>(null);
   const [leads, setLeads] = useState<Lead[]>(() => loadLeads());
   const [quotations, setQuotations] = useState<Quotation[]>(() => loadQuotations());
   const [auditEntries, setAuditEntries] = useState<AuditEntry[]>(() => loadAuditLog());
@@ -77,6 +89,20 @@ export default function App() {
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
   const [drawerOpenInTriageEdit, setDrawerOpenInTriageEdit] = useState(false);
   const [selectedQuotationId, setSelectedQuotationId] = useState<string | null>(null);
+
+  const sessionRef = useRef<UserSession | null>(session);
+  const activeScreenRef = useRef<ActiveScreen>(activeScreen);
+  const idleTimerRef = useRef<number | null>(null);
+  const lastActivityAtRef = useRef<number>(Date.now());
+  const lastResetTsRef = useRef<number>(0);
+
+  useEffect(() => {
+    sessionRef.current = session;
+  }, [session]);
+
+  useEffect(() => {
+    activeScreenRef.current = activeScreen;
+  }, [activeScreen]);
 
   // Persist reactively to LocalStorage
   useEffect(() => {
@@ -124,53 +150,151 @@ export default function App() {
     void syncAuditLogsFromServer();
   }, []);
 
-  const SCREEN_PAGE_NAMES: Record<ActiveScreen, string> = {
-    leads: 'Leads Pipeline',
-    quotations: 'Quotation Workbench',
-    assistant: 'AI Intelligence Assistant',
-    audit: 'Audit Trail View',
-  };
+  const appendAudit = useCallback(
+    (
+      actor: UserSession,
+      pageVisited: string,
+      actionTaken: AuditAction,
+      targetId: string,
+      actionDetails: string
+    ) => {
+      const timestamp = formatKualaLumpurIso();
+      let createdEntry: AuditEntry | null = null;
 
-  const appendAudit = (
-    actor: UserSession,
-    pageVisited: string,
-    actionTaken: AuditAction,
-    targetId: string,
-    actionDetails: string
-  ) => {
-    const timestamp = formatKualaLumpurIso();
-    let createdEntry: AuditEntry | null = null;
-
-    setAuditEntries((prev) => {
-      const logId = generateAuditLogId(prev.length);
-      const entry: AuditEntry = {
-        log_id: logId,
-        timestamp,
-        user_name: actor.name,
-        user_email: actor.email,
-        user_role: actor.role === 'Administrator' ? 'administrator' : 'user',
-        department: actor.department,
-        page_visited: pageVisited,
-        action_taken: actionTaken,
-        target_id: targetId || '—',
-        action_details: actionDetails,
-      };
-      createdEntry = entry;
-      return [entry, ...prev];
-    });
-
-    // Mirror append-only entry to backend immutable log store
-    setTimeout(() => {
-      if (!createdEntry) return;
-      void fetch('/api/audit-logs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(createdEntry),
-      }).catch(() => {
-        // LocalStorage retains immutable copy if network call fails
+      setAuditEntries((prev) => {
+        const logId = generateAuditLogId(prev.length);
+        const entry: AuditEntry = {
+          log_id: logId,
+          timestamp,
+          user_name: actor.name,
+          user_email: actor.email,
+          user_role: actor.role === 'Administrator' ? 'administrator' : 'user',
+          department: actor.department,
+          page_visited: pageVisited,
+          action_taken: actionTaken,
+          target_id: targetId || '—',
+          action_details: actionDetails,
+        };
+        createdEntry = entry;
+        return [entry, ...prev];
       });
-    }, 0);
-  };
+
+      // Mirror append-only entry to backend immutable log store
+      setTimeout(() => {
+        if (!createdEntry) return;
+        void fetch('/api/audit-logs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(createdEntry),
+        }).catch(() => {
+          // LocalStorage retains immutable copy if network call fails
+        });
+      }, 0);
+    },
+    []
+  );
+
+  // Global 10-minute continuous inactivity watchdog (zero-rerender ref-driven timer)
+  useEffect(() => {
+    if (!session) {
+      if (idleTimerRef.current !== null) {
+        window.clearTimeout(idleTimerRef.current);
+        idleTimerRef.current = null;
+      }
+      return;
+    }
+
+    const triggerIdleLogout = () => {
+      const activeSession = sessionRef.current;
+      if (!activeSession) return;
+
+      if (idleTimerRef.current !== null) {
+        window.clearTimeout(idleTimerRef.current);
+        idleTimerRef.current = null;
+      }
+
+      // Clear active session credentials from browser storage immediately
+      try {
+        window.localStorage.removeItem('tjw_session');
+      } catch {
+        // ignore storage errors
+      }
+      saveSession(null);
+
+      // Record immutable SESSION_TIMEOUT_IDLE audit event
+      appendAudit(
+        activeSession,
+        SCREEN_PAGE_NAMES[activeScreenRef.current],
+        'SESSION_TIMEOUT_IDLE',
+        activeSession.email || 'SESSION',
+        'User automatically logged out after 10 minutes of continuous inactivity'
+      );
+
+      // Clear active session and open workspace modals from memory
+      sessionRef.current = null;
+      setTriageModalOpen(false);
+      setSelectedLeadId(null);
+      setDrawerOpenInTriageEdit(false);
+      setSelectedQuotationId(null);
+      setSession(null);
+      setSessionTimeoutNotice(IDLE_TIMEOUT_NOTICE);
+    };
+
+    const scheduleIdleTimer = (delayMs: number) => {
+      if (idleTimerRef.current !== null) {
+        window.clearTimeout(idleTimerRef.current);
+      }
+      idleTimerRef.current = window.setTimeout(triggerIdleLogout, Math.max(0, delayMs));
+    };
+
+    const handleUserActivity = () => {
+      const now = Date.now();
+      lastActivityAtRef.current = now;
+      if (now - lastResetTsRef.current < IDLE_RESET_THROTTLE_MS) {
+        return;
+      }
+      lastResetTsRef.current = now;
+      scheduleIdleTimer(IDLE_TIMEOUT_MS);
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') return;
+      const elapsed = Date.now() - lastActivityAtRef.current;
+      if (elapsed >= IDLE_TIMEOUT_MS) {
+        triggerIdleLogout();
+      } else {
+        scheduleIdleTimer(IDLE_TIMEOUT_MS - elapsed);
+      }
+    };
+
+    const now = Date.now();
+    lastActivityAtRef.current = now;
+    lastResetTsRef.current = now;
+    scheduleIdleTimer(IDLE_TIMEOUT_MS);
+
+    const activityEvents: Array<keyof WindowEventMap> = [
+      'mousemove',
+      'mousedown',
+      'keydown',
+      'scroll',
+      'touchstart',
+    ];
+    for (const evt of activityEvents) {
+      window.addEventListener(evt, handleUserActivity, { passive: true });
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      if (idleTimerRef.current !== null) {
+        window.clearTimeout(idleTimerRef.current);
+        idleTimerRef.current = null;
+      }
+      for (const evt of activityEvents) {
+        window.removeEventListener(evt, handleUserActivity);
+      }
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [session, appendAudit]);
 
   const navigateScreen = (nextScreen: ActiveScreen) => {
     setActiveScreen(nextScreen);
@@ -212,6 +336,7 @@ export default function App() {
   };
 
   const handleStartSession = (newSession: UserSession) => {
+    setSessionTimeoutNotice(null);
     setSession(newSession);
     appendAudit(
       newSession,
@@ -223,7 +348,10 @@ export default function App() {
   };
 
   const handleSignOut = () => {
+    setSessionTimeoutNotice(null);
+    setTriageModalOpen(false);
     setSelectedLeadId(null);
+    setDrawerOpenInTriageEdit(false);
     setSelectedQuotationId(null);
     setSession(null);
   };
@@ -943,7 +1071,12 @@ export default function App() {
   const selectedLead = selectedLeadId ? leadsById[selectedLeadId] || null : null;
 
   if (!session) {
-    return <SessionGate onStartSession={handleStartSession} />;
+    return (
+      <SessionGate
+        onStartSession={handleStartSession}
+        timeoutNotice={sessionTimeoutNotice}
+      />
+    );
   }
 
   return (

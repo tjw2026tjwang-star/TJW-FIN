@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ArrowRight, ShieldCheck, UserCheck } from 'lucide-react';
+import { ArrowRight, Clock, ShieldCheck, UserCheck } from 'lucide-react';
 import {
   DEPARTMENTS,
   DEPARTMENT_FULL_NAMES,
@@ -11,9 +11,10 @@ import { BrandLogo } from './BrandLogo';
 
 interface SessionGateProps {
   onStartSession: (session: UserSession) => void;
+  timeoutNotice?: string | null;
 }
 
-export function SessionGate({ onStartSession }: SessionGateProps) {
+export function SessionGate({ onStartSession, timeoutNotice }: SessionGateProps) {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [department, setDepartment] = useState<Department>('Co Sec');
@@ -105,6 +106,19 @@ export function SessionGate({ onStartSession }: SessionGateProps) {
                 Enter your staff details and role to open your local workspace. All records are stored locally in your browser.
               </p>
             </div>
+
+            {timeoutNotice && (
+              <div
+                role="alert"
+                className="p-3.5 text-xs text-[#CB3737] bg-[#CB3737]/5 border border-[#CB3737]/30 rounded-lg flex items-start gap-2.5"
+              >
+                <Clock className="w-4 h-4 text-[#CB3737] shrink-0 mt-0.5" />
+                <div className="space-y-0.5">
+                  <p className="font-semibold text-[#171717]">Session Terminated (Idle Timeout)</p>
+                  <p className="text-[#CB3737] leading-relaxed">{timeoutNotice}</p>
+                </div>
+              </div>
+            )}
 
             {error && (
               <div className="p-3 text-xs text-[#CB3737] bg-[#CB3737]/5 border border-[#CB3737]/25 rounded-lg">

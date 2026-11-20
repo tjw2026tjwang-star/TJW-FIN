@@ -51,7 +51,8 @@ export type AuditAction =
   | 'AMEND_QUOTATION_VALIDITY'
   | 'APPROVE_QUOTATION'
   | 'DISPATCH_QUOTATION'
-  | 'EXPORT_AUDIT_LOG';
+  | 'EXPORT_AUDIT_LOG'
+  | 'SESSION_TIMEOUT_IDLE';
 
 export const DEPARTMENTS: Department[] = [
   'Co Sec',
