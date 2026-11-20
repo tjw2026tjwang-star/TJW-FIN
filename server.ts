@@ -20,7 +20,7 @@ interface ImmutableAuditRecord {
   timestamp: string;
   user_name: string;
   user_email: string;
-  user_role: 'administrator' | 'user';
+  user_role: 'administrator' | 'executive' | 'user';
   department: 'Co Sec' | 'Accounting' | 'Audit' | 'Tax' | 'Payroll' | 'Finance';
   page_visited: string;
   action_taken: string;
@@ -91,12 +91,18 @@ function appendImmutableAuditLog(input: Partial<ImmutableAuditRecord>): Immutabl
   const duplicate = existing.find((item) => item.log_id === logId);
   if (duplicate) return duplicate;
 
-  const roleNorm = String(input.user_role || '').toLowerCase() === 'administrator'
-    ? 'administrator'
-    : 'user';
   const deptNorm = VALID_DEPARTMENTS.has(String(input.department || ''))
     ? (input.department as ImmutableAuditRecord['department'])
     : 'Finance';
+  const rawRole = String(input.user_role || '').toLowerCase();
+  const roleNorm: ImmutableAuditRecord['user_role'] =
+    deptNorm !== 'Finance'
+      ? 'user'
+      : rawRole === 'administrator'
+        ? 'administrator'
+        : rawRole === 'executive'
+          ? 'executive'
+          : 'user';
 
   const record: ImmutableAuditRecord = {
     log_id: logId,
@@ -203,7 +209,12 @@ You handle inbound client inquiries, quotation generation, and operational compl
 
 ### ROLE-BASED ACCESS & IMMUTABLE AUDIT CONSTRAINTS
 - STRICTLY NO SAMPLE DATA & NO FAKE USERS: Never fabricate unrelated mock records or fake user accounts; only process the provided input.
-- TWO ROLES ONLY: Standard Users ('user': full operational access except quotation approval, validity amendments, and audit log export) and Administrators ('administrator': exclusive authority to approve quotes, amend quotation validity, and download/export the immutable audit trail).
+- THREE-TIER ROLE ACCESS CONTROL & DEPARTMENT CONSTRAINTS:
+  * Non-Finance departments (Co Sec, Accounting, Audit, Tax, Payroll) are strictly locked to 'user' role only.
+  * Finance Department is authorized for 'administrator', 'executive', or 'user' roles.
+  * 'administrator' (Finance only): Full operational access, Step 6 quotation drafting, exclusive Step 7 approval & validity amendment, and exclusive CSV/JSON audit trail export.
+  * 'executive' (Finance only): Full operational access and Step 6 quotation drafting/editing; cannot approve quotations, amend validity, or export audit logs.
+  * 'user': Operational Steps 1–4 intake, SLA contact tracking, and scope logging only; cannot draft quotations, approve quotations, or export audit logs.
 - IMMUTABLE APPEND-ONLY AUDIT TRAIL: Nobody, including Administrators, can delete, purge, alter, or truncate audit log records.
 - SECURITY SESSION TIMEOUT: Active staff sessions automatically terminate after 10 continuous minutes (600,000 ms) of inactivity, clearing tjw_session and recording SESSION_TIMEOUT_IDLE.
 
@@ -268,15 +279,17 @@ async function startServer() {
   app.patch('/api/audit-logs', rejectAuditMutation);
   app.patch('/api/audit-logs/:id', rejectAuditMutation);
 
-  // Administrator-Exclusive Audit Trail Export Endpoint (CSV or JSON)
+  // Finance Administrator-Exclusive Audit Trail Export Endpoint (CSV or JSON)
   app.get('/api/audit-logs/export', (req, res) => {
     const roleHeader = String(req.header('x-user-role') || req.query.role || '')
       .trim()
       .toLowerCase();
+    const deptHeader = String(req.header('x-user-department') || 'Finance').trim();
 
-    if (roleHeader !== 'administrator') {
+    if (roleHeader !== 'administrator' || deptHeader !== 'Finance') {
       res.status(403).json({
-        error: 'Export restricted to System Administrator / Manager (role === "administrator" required).',
+        error:
+          'Export restricted to Finance Department Administrator (role === "administrator" and department === "Finance" required).',
       });
       return;
     }
@@ -284,7 +297,7 @@ async function startServer() {
     const format = String(req.query.format || 'csv').toLowerCase() === 'json' ? 'json' : 'csv';
     const userName = String(req.header('x-user-name') || 'Administrator').trim();
     const userEmail = String(req.header('x-user-email') || '').trim();
-    const department = String(req.header('x-user-department') || 'Finance').trim();
+    const department = deptHeader;
 
     // Append immutable EXPORT_AUDIT_LOG event before streaming file data
     const exportEvent = appendImmutableAuditLog({
@@ -584,7 +597,7 @@ PIC Verified Discovery Scope Notes: ${scopeNotes || 'Standard annual statutory c
         sessionContext?: {
           user_name?: string;
           user_email?: string;
-          user_role?: 'administrator' | 'user';
+          user_role?: 'administrator' | 'executive' | 'user';
           department?: string;
           page_visited?: string;
         };
@@ -610,10 +623,18 @@ PIC Verified Discovery Scope Notes: ${scopeNotes || 'Standard annual statutory c
 
       const ctxName = sessionContext?.user_name || 'Staff Member';
       const ctxEmail = sessionContext?.user_email || '';
-      const ctxRole = sessionContext?.user_role === 'administrator' ? 'administrator' : 'user';
       const ctxDept = VALID_DEPARTMENTS.has(String(sessionContext?.department || ''))
         ? (sessionContext!.department as ImmutableAuditRecord['department'])
         : 'Finance';
+      const rawCtxRole = String(sessionContext?.user_role || '').toLowerCase();
+      const ctxRole: ImmutableAuditRecord['user_role'] =
+        ctxDept !== 'Finance'
+          ? 'user'
+          : rawCtxRole === 'administrator'
+            ? 'administrator'
+            : rawCtxRole === 'executive'
+              ? 'executive'
+              : 'user';
       const ctxPage = sessionContext?.page_visited || 'AI Intelligence Assistant';
 
       const ai = createGeminiClient();
@@ -735,7 +756,7 @@ ${input.slice(0, 9500)}`,
                     user_email: { type: Type.STRING },
                     user_role: {
                       type: Type.STRING,
-                      enum: ['administrator', 'user'],
+                      enum: ['administrator', 'executive', 'user'],
                     },
                     department: {
                       type: Type.STRING,

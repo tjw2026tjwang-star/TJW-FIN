@@ -1,6 +1,11 @@
 import { useMemo, useState } from 'react';
 import { Download, FileJson, Lock, Search, ShieldCheck } from 'lucide-react';
-import type { AuditAction, AuditEntry, UserSession } from '../types';
+import {
+  isAdministratorSession,
+  type AuditAction,
+  type AuditEntry,
+  type UserSession,
+} from '../types';
 import { formatDateTime } from '../lib/sla';
 
 interface AuditLogViewProps {
@@ -32,7 +37,7 @@ export function AuditLogView({ entries, session, onSyncServerLogs }: AuditLogVie
   const [exportFeedback, setExportFeedback] = useState<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
 
-  const isAdministrator = session.role === 'Administrator';
+  const isAdministrator = isAdministratorSession(session);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -180,7 +185,7 @@ export function AuditLogView({ entries, session, onSyncServerLogs }: AuditLogVie
                 Export Audit Trail (JSON)
               </button>
               <span className="text-[11px] font-medium text-[#CB3737]">
-                Export restricted to System Administrator / Manager
+                Export restricted to Finance Administrator ({session.role} view-only)
               </span>
             </div>
           )}
@@ -275,7 +280,9 @@ export function AuditLogView({ entries, session, onSyncServerLogs }: AuditLogVie
                           className={
                             entry.user_role === 'administrator'
                               ? 'text-[#CB3737] font-semibold'
-                              : 'text-neutral-600'
+                              : entry.user_role === 'executive'
+                                ? 'text-[#EE6F57] font-semibold'
+                                : 'text-neutral-600'
                           }
                         >
                           {entry.user_role}

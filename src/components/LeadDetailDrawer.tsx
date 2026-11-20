@@ -6,6 +6,7 @@ import {
   Calculator,
   Check,
   FileText,
+  Lock,
   Pencil,
   X,
 } from 'lucide-react';
@@ -43,6 +44,7 @@ export interface EditLeadTriagePayload {
 interface LeadDetailDrawerProps {
   lead: Lead | null;
   linkedQuotation?: Quotation;
+  canDraftQuotation: boolean;
   initialEditTriage?: boolean;
   onClose: () => void;
   onEditLeadTriage: (leadId: string, payload: EditLeadTriagePayload) => void;
@@ -86,6 +88,7 @@ function stageOrder(stage: Lead['workflowStage']): number {
 export function LeadDetailDrawer({
   lead,
   linkedQuotation,
+  canDraftQuotation,
   initialEditTriage = false,
   onClose,
   onEditLeadTriage,
@@ -268,6 +271,7 @@ export function LeadDetailDrawer({
   };
 
   const handleGenerateClick = () => {
+    if (!canDraftQuotation) return;
     onGenerateQuotation(lead.id, collectScopePayload());
   };
 
@@ -963,24 +967,45 @@ export function LeadDetailDrawer({
                   />
                 </div>
 
-                <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
-                  <button
-                    type="button"
-                    onClick={handleSaveScopeClick}
-                    className="px-4 py-2 text-xs font-medium text-neutral-700 bg-white border border-[#E3E3E3] rounded-lg hover:bg-neutral-50 transition-colors cursor-pointer"
-                  >
-                    Save Scope Only
-                  </button>
+                <div className="space-y-2.5 pt-2">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <button
+                      type="button"
+                      onClick={handleSaveScopeClick}
+                      className="px-4 py-2 text-xs font-medium text-neutral-700 bg-white border border-[#E3E3E3] rounded-lg hover:bg-neutral-50 transition-colors cursor-pointer"
+                    >
+                      Save Scope Only
+                    </button>
 
-                  <button
-                    type="button"
-                    onClick={handleGenerateClick}
-                    className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-[#CB3737] hover:bg-[#B02D2D] rounded-lg transition-colors cursor-pointer"
-                  >
-                    <Calculator className="w-3.5 h-3.5" />
-                    Generate MYR Quotation (Step 6)
-                    <ArrowRight className="w-3.5 h-3.5" />
-                  </button>
+                    {canDraftQuotation ? (
+                      <button
+                        type="button"
+                        onClick={handleGenerateClick}
+                        className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-[#CB3737] hover:bg-[#B02D2D] rounded-lg transition-colors cursor-pointer"
+                      >
+                        <Calculator className="w-3.5 h-3.5" />
+                        Generate MYR Quotation (Step 6)
+                        <ArrowRight className="w-3.5 h-3.5" />
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled
+                        title="Quotation drafting restricted to Finance Executive / Administrator"
+                        className="inline-flex items-center gap-2 px-4 py-2 text-xs font-medium text-neutral-400 bg-[#FAFAFA] border border-[#E3E3E3] rounded-lg cursor-not-allowed"
+                      >
+                        <Lock className="w-3.5 h-3.5" />
+                        Generate MYR Quotation (Locked)
+                      </button>
+                    )}
+                  </div>
+
+                  {!canDraftQuotation && (
+                    <div className="p-3 bg-[#FAFAFA] border border-[#E3E3E3] rounded-lg flex items-center gap-2 text-xs text-[#CB3737] font-medium">
+                      <Lock className="w-3.5 h-3.5 shrink-0" />
+                      <span>Quotation drafting restricted to Finance Executive / Administrator</span>
+                    </div>
+                  )}
                 </div>
               </div>
             )}

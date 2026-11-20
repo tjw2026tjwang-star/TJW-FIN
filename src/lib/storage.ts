@@ -1,4 +1,10 @@
-import type { AuditEntry, Lead, Quotation, UserSession } from '../types';
+import {
+  normalizeSessionRole,
+  type AuditEntry,
+  type Lead,
+  type Quotation,
+  type UserSession,
+} from '../types';
 
 const STORAGE_KEYS = {
   session: 'tjw_session',
@@ -28,7 +34,12 @@ function safeWrite<T>(key: string, value: T): void {
 }
 
 export function loadSession(): UserSession | null {
-  return safeRead<UserSession | null>(STORAGE_KEYS.session, null);
+  const stored = safeRead<UserSession | null>(STORAGE_KEYS.session, null);
+  if (!stored) return null;
+  return {
+    ...stored,
+    role: normalizeSessionRole(stored.department, stored.role),
+  };
 }
 
 export function saveSession(session: UserSession | null): void {
@@ -41,7 +52,10 @@ export function saveSession(session: UserSession | null): void {
     }
     return;
   }
-  safeWrite(STORAGE_KEYS.session, session);
+  safeWrite(STORAGE_KEYS.session, {
+    ...session,
+    role: normalizeSessionRole(session.department, session.role),
+  });
 }
 
 export function loadLeads(): Lead[] {

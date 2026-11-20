@@ -6,7 +6,11 @@ import {
   Search,
 } from 'lucide-react';
 import {
+  canDraftQuotationSession,
   DEPARTMENTS,
+  isAdministratorSession,
+  normalizeSessionRole,
+  toAuditRole,
   type AssistantResponse,
   type AuditAction,
   type AuditEntry,
@@ -65,7 +69,7 @@ type ActiveScreen = 'leads' | 'quotations' | 'assistant' | 'audit';
 const IDLE_TIMEOUT_MS = 10 * 60 * 1000; // 10 continuous minutes (600,000 ms)
 const IDLE_RESET_THROTTLE_MS = 1000;
 const IDLE_TIMEOUT_NOTICE =
-  'You have been logged out due to 10 minutes of inactivity for security compliance.';
+  'You were logged out due to 10 minutes of inactivity for security compliance.';
 const SCREEN_PAGE_NAMES: Record<ActiveScreen, string> = {
   leads: 'Leads Pipeline',
   quotations: 'Quotation Workbench',
@@ -168,7 +172,7 @@ export default function App() {
           timestamp,
           user_name: actor.name,
           user_email: actor.email,
-          user_role: actor.role === 'Administrator' ? 'administrator' : 'user',
+          user_role: toAuditRole(actor.role),
           department: actor.department,
           page_visited: pageVisited,
           action_taken: actionTaken,
@@ -336,14 +340,18 @@ export default function App() {
   };
 
   const handleStartSession = (newSession: UserSession) => {
+    const normalized: UserSession = {
+      ...newSession,
+      role: normalizeSessionRole(newSession.department, newSession.role),
+    };
     setSessionTimeoutNotice(null);
-    setSession(newSession);
+    setSession(normalized);
     appendAudit(
-      newSession,
+      normalized,
       'Leads Pipeline',
       'VIEW_PAGE',
       '—',
-      `Signed into Finance Operations workspace as ${newSession.role.toLowerCase()} (${newSession.email}, ${newSession.department}).`
+      `Signed into Finance Operations workspace as ${toAuditRole(normalized.role)} (${normalized.email}, ${normalized.department}).`
     );
   };
 
@@ -516,7 +524,7 @@ export default function App() {
     result: AssistantResponse,
     rawInput: string
   ) => {
-    if (!session) return;
+    if (!session || !canDraftQuotationSession(session)) return;
     const nowIso = new Date().toISOString();
     const primary = DEPARTMENTS.includes(result.routing.primary_dept)
       ? result.routing.primary_dept
@@ -759,12 +767,12 @@ export default function App() {
     );
   };
 
-  // Step 6: Generate Quotation Draft (Enters Pending Approval)
+  // Step 6: Generate Quotation Draft (Finance Executive / Administrator only; Enters Pending Approval)
   const handleGenerateQuotation = (
     leadId: string,
     scopeInput: Omit<LeadScope, 'completed' | 'updatedAt'>
   ) => {
-    if (!session) return;
+    if (!session || !canDraftQuotationSession(session)) return;
     const targetLead = leads.find((l) => l.id === leadId);
     if (!targetLead) return;
     const nowIso = new Date().toISOString();
@@ -826,7 +834,7 @@ export default function App() {
     setActiveScreen('quotations');
   };
 
-  // Step 6 Edit Draft Line Items (Locked once Approved or Dispatched)
+  // Step 6 Edit Draft Line Items (Finance Executive / Administrator only; Locked once Approved or Dispatched)
   const handleUpdateQuotationContent = (
     quotationId: string,
     payload: {
@@ -836,7 +844,7 @@ export default function App() {
       exclusions: string;
     }
   ) => {
-    if (!session) return;
+    if (!session || !canDraftQuotationSession(session)) return;
     const existing = quotations.find((q) => q.id === quotationId);
     if (!existing || existing.isApproved || existing.status === 'Dispatched') return;
 
@@ -868,9 +876,9 @@ export default function App() {
     );
   };
 
-  // Step 7: Administrator-Only Quotation Approval Gate
+  // Step 7: Finance Administrator-Only Quotation Approval Gate
   const handleToggleApproval = (quotationId: string, approved: boolean) => {
-    if (!session || session.role !== 'Administrator') return;
+    if (!session || !isAdministratorSession(session)) return;
     const existing = quotations.find((q) => q.id === quotationId);
     if (!existing || existing.status === 'Dispatched') return;
 
@@ -899,13 +907,13 @@ export default function App() {
     );
   };
 
-  // Administrator-Only Quotation Validity Amendment
+  // Finance Administrator-Only Quotation Validity Amendment
   const handleAmendQuotationValidity = (
     quotationId: string,
     newValidityDays: number,
     newValidUntil: string
   ) => {
-    if (!session || session.role !== 'Administrator') return;
+    if (!session || !isAdministratorSession(session)) return;
     const existing = quotations.find((q) => q.id === quotationId);
     if (!existing) return;
 
@@ -1147,7 +1155,9 @@ export default function App() {
                     className={
                       session.role === 'Administrator'
                         ? 'text-[#CB3737] font-semibold'
-                        : 'text-neutral-500'
+                        : session.role === 'Executive'
+                          ? 'text-[#EE6F57] font-semibold'
+                          : 'text-neutral-500'
                     }
                   >
                     {session.role}
@@ -1573,6 +1583,7 @@ export default function App() {
       <LeadDetailDrawer
         lead={selectedLead}
         linkedQuotation={selectedLead ? quotationByLeadId[selectedLead.id] : undefined}
+        canDraftQuotation={canDraftQuotationSession(session)}
         initialEditTriage={drawerOpenInTriageEdit}
         onClose={() => {
           setSelectedLeadId(null);

@@ -16,7 +16,9 @@ import {
   Trash2,
 } from 'lucide-react';
 import {
+  canDraftQuotationSession,
   DEPARTMENTS,
+  isAdministratorSession,
   type BillingFrequency,
   type Department,
   type DispatchChannel,
@@ -126,9 +128,10 @@ export function QuotationWorkbench({
   const liveTotals = useMemo(() => computeQuotationTotals(lineItems), [lineItems]);
 
   const isDispatched = selected?.status === 'Dispatched';
-  const canEditDraft = Boolean(selected && !selected.isApproved && !isDispatched);
+  const isAdministrator = isAdministratorSession(session);
+  const canDraftQuotation = canDraftQuotationSession(session);
+  const canEditDraft = Boolean(canDraftQuotation && selected && !selected.isApproved && !isDispatched);
   const isLockedFromEdit = !canEditDraft || !editingDraft;
-  const isAdministrator = session.role === 'Administrator';
 
   const activeValidityDays = selected?.validityDays || DEFAULT_VALIDITY_DAYS;
   const activeValidUntil = selected
@@ -307,8 +310,9 @@ export function QuotationWorkbench({
               : `No quotations in "${statusFilter}" status`}
           </p>
           <p className="text-xs text-neutral-500 max-w-md mx-auto leading-relaxed">
-            Open a contacted lead in the Leads Pipeline, log confirmed Step 4 service scope
-            specifications, and run the Step 6 Malaysian SME quotation engine to generate a draft.
+            {canDraftQuotation
+              ? 'Open a contacted lead in the Leads Pipeline, log confirmed Step 4 service scope specifications, and run the Step 6 Malaysian SME quotation engine to generate a draft.'
+              : 'Quotation drafting restricted to Finance Executive / Administrator. Once a Finance Executive or Administrator drafts a quotation, it will appear here for read-only visibility.'}
           </p>
         </div>
       ) : (
@@ -466,8 +470,8 @@ export function QuotationWorkbench({
 
                   {!isAdministrator && (
                     <p className="text-[11px] text-neutral-500">
-                      Read-only display for Standard User role. Only Administrators can extend or
-                      adjust quotation validity dates.
+                      Read-only display for {session.role} role. Only Finance Administrators can
+                      extend or adjust quotation validity dates beyond 7 calendar days.
                     </p>
                   )}
 
@@ -608,6 +612,11 @@ export function QuotationWorkbench({
                           {editingDraft ? 'Cancel Edit' : 'Edit'}
                         </button>
                       </div>
+                    ) : !canDraftQuotation ? (
+                      <span className="inline-flex items-center gap-1.5 text-xs text-[#CB3737] font-medium">
+                        <Lock className="w-3.5 h-3.5 shrink-0" />
+                        Quotation drafting restricted to Finance Executive / Administrator
+                      </span>
                     ) : (
                       <span className="inline-flex items-center gap-1 text-xs text-neutral-500 font-medium">
                         <Lock className="w-3.5 h-3.5" />
@@ -911,8 +920,9 @@ export function QuotationWorkbench({
                           </p>
                         ) : (
                           <p className="text-[#CB3737] font-medium">
-                            Requires Administrator Approval — You are signed in as User. Switch to
-                            an Administrator session to authorize this quotation.
+                            Requires Administrator Approval — You are signed in as {session.role} (
+                            {session.department}). Only a Finance Department Administrator can
+                            authorize this quotation for dispatch.
                           </p>
                         )}
                       </div>

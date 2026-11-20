@@ -1,8 +1,9 @@
 import { useState } from 'react';
-import { ArrowRight, Clock, ShieldCheck, UserCheck } from 'lucide-react';
+import { ArrowRight, Briefcase, Clock, Lock, ShieldCheck, UserCheck } from 'lucide-react';
 import {
   DEPARTMENTS,
   DEPARTMENT_FULL_NAMES,
+  normalizeSessionRole,
   type Department,
   type UserRole,
   type UserSession,
@@ -17,9 +18,19 @@ interface SessionGateProps {
 export function SessionGate({ onStartSession, timeoutNotice }: SessionGateProps) {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
-  const [department, setDepartment] = useState<Department>('Co Sec');
+  const [department, setDepartment] = useState<Department>('Finance');
   const [role, setRole] = useState<UserRole>('Administrator');
   const [error, setError] = useState<string | null>(null);
+
+  const isFinanceDepartment = department === 'Finance';
+  const effectiveRole: UserRole = normalizeSessionRole(department, role);
+
+  const handleDepartmentChange = (nextDept: Department) => {
+    setDepartment(nextDept);
+    if (nextDept !== 'Finance') {
+      setRole('User');
+    }
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -35,11 +46,13 @@ export function SessionGate({ onStartSession, timeoutNotice }: SessionGateProps)
       return;
     }
 
+    const enforcedRole = normalizeSessionRole(department, role);
+
     onStartSession({
       name: cleanName,
       email: cleanEmail,
       department,
-      role,
+      role: enforcedRole,
       signedInAt: new Date().toISOString(),
     });
   };
@@ -66,28 +79,38 @@ export function SessionGate({ onStartSession, timeoutNotice }: SessionGateProps)
           <p className="text-sm sm:text-base text-neutral-600 leading-relaxed max-w-lg">
             Manage incoming client inquiries across Company Secretarial, Accounting, Statutory
             Audit, Corporate &amp; Personal Tax, Payroll, and Finance Advisory (FP&amp;A) with
-            zero-cost browser persistence and strict Administrator approval gating before dispatch.
+            3-tier role governance, 10-minute idle security timeout, and append-only audit logging.
           </p>
 
-          <div className="pt-2 border-t border-[#E3E3E3] grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+          <div className="pt-4 border-t border-[#E3E3E3] grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
             <div className="space-y-1">
               <p className="font-semibold text-[#171717] flex items-center gap-1.5">
-                <ShieldCheck className="w-4 h-4 text-[#CB3737]" />
-                Administrator Role
+                <ShieldCheck className="w-4 h-4 text-[#CB3737] shrink-0" />
+                Administrator
               </p>
               <p className="text-neutral-600 leading-relaxed">
-                Full operational access plus exclusive authority to approve quotations, amend
-                quotation validity, and export the immutable Audit Trail (CSV/JSON).
+                Finance only. Full access, exclusive quotation approval, validity amendments, and
+                Audit Trail export.
               </p>
             </div>
             <div className="space-y-1">
               <p className="font-semibold text-[#171717] flex items-center gap-1.5">
-                <UserCheck className="w-4 h-4 text-[#EE6F57]" />
-                User Role
+                <Briefcase className="w-4 h-4 text-[#EE6F57] shrink-0" />
+                Executive
               </p>
               <p className="text-neutral-600 leading-relaxed">
-                Triage leads, log PIC outreach, record scopes, and draft quotations. Approval gate,
-                validity amendments, and audit log exports are strictly locked.
+                Finance only. Operational workflow plus Step 6 quotation drafting &amp; editing.
+                Approval &amp; audit export locked.
+              </p>
+            </div>
+            <div className="space-y-1">
+              <p className="font-semibold text-[#171717] flex items-center gap-1.5">
+                <UserCheck className="w-4 h-4 text-neutral-600 shrink-0" />
+                User
+              </p>
+              <p className="text-neutral-600 leading-relaxed">
+                All non-Finance depts &amp; general Finance staff. Steps 1–4 triage, SLA &amp; scope
+                only. Quotation drafting locked.
               </p>
             </div>
           </div>
@@ -99,11 +122,10 @@ export function SessionGate({ onStartSession, timeoutNotice }: SessionGateProps)
             className="bg-white border border-[#E3E3E3] rounded-xl p-6 sm:p-8 space-y-5"
           >
             <div className="space-y-1 pb-2 border-b border-[#E3E3E3]">
-              <h2 className="text-base font-semibold text-[#171717]">
-                Staff Session Access
-              </h2>
+              <h2 className="text-base font-semibold text-[#171717]">Staff Session Access</h2>
               <p className="text-xs text-neutral-500">
-                Enter your staff details and role to open your local workspace. All records are stored locally in your browser.
+                Enter your staff details and department to open your local workspace. Non-Finance
+                departments are strictly locked to User access.
               </p>
             </div>
 
@@ -128,7 +150,10 @@ export function SessionGate({ onStartSession, timeoutNotice }: SessionGateProps)
 
             <div className="space-y-4">
               <div>
-                <label htmlFor="staff-name" className="block text-xs font-medium text-neutral-700 mb-1.5">
+                <label
+                  htmlFor="staff-name"
+                  className="block text-xs font-medium text-neutral-700 mb-1.5"
+                >
                   Full Name
                 </label>
                 <input
@@ -143,7 +168,10 @@ export function SessionGate({ onStartSession, timeoutNotice }: SessionGateProps)
               </div>
 
               <div>
-                <label htmlFor="staff-email" className="block text-xs font-medium text-neutral-700 mb-1.5">
+                <label
+                  htmlFor="staff-email"
+                  className="block text-xs font-medium text-neutral-700 mb-1.5"
+                >
                   Work Email
                 </label>
                 <input
@@ -158,51 +186,91 @@ export function SessionGate({ onStartSession, timeoutNotice }: SessionGateProps)
               </div>
 
               <div>
-                <label htmlFor="staff-dept" className="block text-xs font-medium text-neutral-700 mb-1.5">
+                <label
+                  htmlFor="staff-dept"
+                  className="block text-xs font-medium text-neutral-700 mb-1.5"
+                >
                   Department
                 </label>
                 <select
                   id="staff-dept"
                   value={department}
-                  onChange={(e) => setDepartment(e.target.value as Department)}
+                  onChange={(e) => handleDepartmentChange(e.target.value as Department)}
                   className="w-full px-3.5 py-2.5 text-sm bg-white border border-[#E3E3E3] rounded-lg focus:outline-none focus:border-[#CB3737]"
                 >
                   {DEPARTMENTS.map((dept) => (
                     <option key={dept} value={dept}>
                       {dept} — {DEPARTMENT_FULL_NAMES[dept]}
+                      {dept === 'Finance' ? ' (Admin / Executive / User)' : ' (User Only)'}
                     </option>
                   ))}
                 </select>
               </div>
 
               <div>
-                <span className="block text-xs font-medium text-neutral-700 mb-1.5">
-                  Access Role (2-Role Policy)
-                </span>
-                <div className="grid grid-cols-2 gap-2.5">
-                  {(['Administrator', 'User'] as const).map((roleOption) => {
-                    const active = role === roleOption;
-                    return (
-                      <button
-                        key={roleOption}
-                        type="button"
-                        onClick={() => setRole(roleOption)}
-                        className={`px-3.5 py-2.5 text-left rounded-lg border transition-colors cursor-pointer ${
-                          active
-                            ? 'border-[#CB3737] bg-[#CB3737]/5 text-[#171717]'
-                            : 'border-[#E3E3E3] bg-white text-neutral-600 hover:border-neutral-400'
-                        }`}
-                      >
-                        <p className="text-xs font-semibold">{roleOption}</p>
-                        <p className="text-[11px] text-neutral-500 mt-0.5">
-                          {roleOption === 'Administrator'
-                            ? 'Can approve & unlock dispatch'
-                            : 'Operations only (approval locked)'}
-                        </p>
-                      </button>
-                    );
-                  })}
+                <div className="flex items-center justify-between gap-2 mb-1.5">
+                  <label
+                    htmlFor="staff-role"
+                    className="block text-xs font-medium text-neutral-700"
+                  >
+                    Access Role (3-Tier Policy)
+                  </label>
+                  {!isFinanceDepartment && (
+                    <span className="inline-flex items-center gap-1 text-[11px] font-medium text-[#CB3737]">
+                      <Lock className="w-3 h-3" />
+                      Locked to User ({department})
+                    </span>
+                  )}
                 </div>
+
+                <select
+                  id="staff-role"
+                  value={effectiveRole}
+                  disabled={!isFinanceDepartment}
+                  onChange={(e) => {
+                    if (!isFinanceDepartment) return;
+                    setRole(e.target.value as UserRole);
+                  }}
+                  className="w-full px-3.5 py-2.5 text-sm bg-white border border-[#E3E3E3] rounded-lg focus:outline-none focus:border-[#CB3737] disabled:bg-[#FAFAFA] disabled:text-neutral-600 disabled:cursor-not-allowed"
+                >
+                  <option value="Administrator" disabled={!isFinanceDepartment}>
+                    Administrator — Full access, quotation approval, validity amend &amp; audit export (Finance only)
+                  </option>
+                  <option value="Executive" disabled={!isFinanceDepartment}>
+                    Executive — Operations + quotation drafting &amp; editing, no approval/export (Finance only)
+                  </option>
+                  <option value="User">
+                    User — Operational lead intake, SLA contact tracking &amp; scope logging only
+                  </option>
+                </select>
+
+                <p className="text-[11px] text-neutral-500 mt-1.5 leading-relaxed">
+                  {!isFinanceDepartment ? (
+                    <>
+                      Staff outside the <strong>Finance</strong> department are restricted to the{' '}
+                      <strong>User</strong> role. Quotation drafting, approval, and audit log export
+                      require Finance Department authorization.
+                    </>
+                  ) : effectiveRole === 'Administrator' ? (
+                    <>
+                      <strong>Administrator</strong> (Finance): Full operational control, Step 6
+                      quotation drafting, exclusive Step 7 approval &amp; validity amendment, and
+                      CSV/JSON audit export.
+                    </>
+                  ) : effectiveRole === 'Executive' ? (
+                    <>
+                      <strong>Executive</strong> (Finance): Full operational intake &amp; Step 6
+                      quotation drafting/editing. Step 7 quotation approval and audit trail export
+                      remain locked.
+                    </>
+                  ) : (
+                    <>
+                      <strong>User</strong> (Finance): Operational triage, contact SLA updates, and
+                      scope logging only. Step 6 quotation drafting, Step 7 approval, and audit
+                      export are locked.
+                    </>
+                  )}
+                </p>
               </div>
             </div>
 

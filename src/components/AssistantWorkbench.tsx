@@ -6,11 +6,18 @@ import {
   Copy,
   FilePlus2,
   Loader2,
+  Lock,
   Sparkles,
   UserPlus,
 } from 'lucide-react';
-import type { AssistantResponse, AuditEntry, UserSession } from '../types';
-import { DEPARTMENT_FULL_NAMES } from '../types';
+import {
+  canDraftQuotationSession,
+  DEPARTMENT_FULL_NAMES,
+  toAuditRole,
+  type AssistantResponse,
+  type AuditEntry,
+  type UserSession,
+} from '../types';
 import { formatDateTime, formatMyr } from '../lib/sla';
 
 interface AssistantWorkbenchProps {
@@ -52,7 +59,7 @@ export function AssistantWorkbench({
           sessionContext: {
             user_name: session.name,
             user_email: session.email,
-            user_role: session.role === 'Administrator' ? 'administrator' : 'user',
+            user_role: toAuditRole(session.role),
             department: session.department,
             page_visited: 'AI Intelligence Assistant',
           },
@@ -80,6 +87,7 @@ export function AssistantWorkbench({
     setTimeout(() => setCopiedKey(null), 2200);
   };
 
+  const canDraftQuotation = canDraftQuotationSession(session);
   const hasQuoteItems = Boolean(result && result.quotation.line_items.length > 0);
   const estYearOne = result
     ? result.quotation.total_setup_fee_myr +
@@ -411,16 +419,32 @@ export function AssistantWorkbench({
                     Route Lead to Pipeline (Step 1)
                   </button>
 
-                  {hasQuoteItems && (
-                    <button
-                      type="button"
-                      onClick={() => onImportLeadAndQuotation(result, inputText.trim())}
-                      className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#CB3737] hover:bg-[#B02D2D] rounded-lg transition-colors cursor-pointer"
-                    >
-                      <FilePlus2 className="w-3.5 h-3.5" />
-                      Import Lead + Quotation (Pending Approval)
-                    </button>
-                  )}
+                  {hasQuoteItems &&
+                    (canDraftQuotation ? (
+                      <button
+                        type="button"
+                        onClick={() => onImportLeadAndQuotation(result, inputText.trim())}
+                        className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#CB3737] hover:bg-[#B02D2D] rounded-lg transition-colors cursor-pointer"
+                      >
+                        <FilePlus2 className="w-3.5 h-3.5" />
+                        Import Lead + Quotation (Pending Approval)
+                      </button>
+                    ) : (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          disabled
+                          title="Quotation drafting restricted to Finance Executive / Administrator"
+                          className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-neutral-400 bg-[#FAFAFA] border border-[#E3E3E3] rounded-lg cursor-not-allowed"
+                        >
+                          <Lock className="w-3.5 h-3.5" />
+                          Import Quotation (Locked)
+                        </button>
+                        <span className="text-[11px] font-medium text-[#CB3737]">
+                          Quotation drafting restricted to Finance Executive / Administrator
+                        </span>
+                      </div>
+                    ))}
                 </div>
               </div>
             )}

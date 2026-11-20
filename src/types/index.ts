@@ -1,4 +1,6 @@
-export type UserRole = 'Administrator' | 'User';
+export type UserRole = 'Administrator' | 'Executive' | 'User';
+
+export type AuditRole = 'administrator' | 'executive' | 'user';
 
 export type Department = 'Co Sec' | 'Accounting' | 'Audit' | 'Tax' | 'Payroll' | 'Finance';
 
@@ -107,6 +109,32 @@ export interface UserSession {
   signedInAt: string;
 }
 
+export function normalizeSessionRole(department: Department, role: UserRole): UserRole {
+  if (department !== 'Finance') return 'User';
+  if (role === 'Administrator' || role === 'Executive' || role === 'User') {
+    return role;
+  }
+  return 'User';
+}
+
+export function toAuditRole(role: UserRole): AuditRole {
+  if (role === 'Administrator') return 'administrator';
+  if (role === 'Executive') return 'executive';
+  return 'user';
+}
+
+export function isAdministratorSession(session: UserSession | null | undefined): boolean {
+  return Boolean(session && session.department === 'Finance' && session.role === 'Administrator');
+}
+
+export function canDraftQuotationSession(session: UserSession | null | undefined): boolean {
+  return Boolean(
+    session &&
+      session.department === 'Finance' &&
+      (session.role === 'Administrator' || session.role === 'Executive')
+  );
+}
+
 export interface LeadScope {
   completed: boolean;
   turnoverTier: TurnoverTierId | '';
@@ -135,7 +163,7 @@ export interface AuditEntry {
   timestamp: string; // ISO 8601 in Asia/Kuala_Lumpur (UTC+8)
   user_name: string;
   user_email: string;
-  user_role: 'administrator' | 'user';
+  user_role: AuditRole;
   department: Department;
   page_visited: string;
   action_taken: AuditAction;
