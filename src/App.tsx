@@ -1,244 +1,473 @@
 import { useEffect, useMemo, useState } from 'react';
-import { onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth';
-import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import {
   AlertTriangle,
-  BellRing,
-  CheckSquare,
-  Database,
-  FileSpreadsheet,
-  Inbox,
-  Loader2,
   LogOut,
-  Menu,
   Plus,
   Search,
-  Settings,
-  X,
 } from 'lucide-react';
 import {
-  auth,
-  BOOTSTRAPPED_ADMIN_EMAIL,
-  db,
-  googleProvider,
-  handleFirestoreError,
-  OperationType,
-} from './lib/firebase';
+  DEPARTMENTS,
+  type AuditAction,
+  type AuditEntry,
+  type ContactStatus,
+  type Department,
+  type DispatchChannel,
+  type Lead,
+  type LeadScope,
+  type OutreachChannel,
+  type Quotation,
+  type QuotationLineItem,
+  type UserSession,
+  type WorkflowStage,
+} from './types';
 import {
-  ensureUserProfile,
-  loadOrgConfig,
-} from './lib/firestoreService';
+  loadAuditLog,
+  loadLeads,
+  loadQuotations,
+  loadSession,
+  saveAuditLog,
+  saveLeads,
+  saveQuotations,
+  saveSession,
+} from './lib/storage';
 import {
-  buildDefaultOrgConfig,
   evaluateLeadSla,
   formatDateShort,
   formatMyr,
-  getDeptShortCode,
+  generateLeadCode,
+  generateQuoteNumber,
+  generateSafeId,
 } from './lib/sla';
-import { seedWorkspaceSamples } from './lib/sampleData';
 import {
-  DEPARTMENTS,
-  type AuditLog,
-  type Department,
-  type Lead,
-  type OrgConfig,
-  type Quotation,
-  type UserProfile,
-  type WorkflowStage,
-} from './types';
-import { SignInGate } from './components/SignInGate';
-import { InboundTriageModal } from './components/InboundTriageModal';
+  buildBaselineQuotationItems,
+  computeQuotationTotals,
+  DEFAULT_ASSUMPTIONS,
+  DEFAULT_EXCLUSIONS,
+  DEFAULT_LEGAL_REMARKS,
+} from './lib/pricing';
+import { BrandLogo } from './components/BrandLogo';
+import { SessionGate } from './components/SessionGate';
+import { InboundTriageModal, type NewLeadInput } from './components/InboundTriageModal';
 import { LeadDetailDrawer } from './components/LeadDetailDrawer';
 import { QuotationWorkbench } from './components/QuotationWorkbench';
-import { SlaEscalationsView } from './components/SlaEscalationsView';
-import { AuditSettingsView } from './components/AuditSettingsView';
+import { AuditLogView } from './components/AuditLogView';
 
-type NavSection = 'leads' | 'sla' | 'quotations' | 'approvals' | 'audit';
-
-const SECTION_META: Record<NavSection, { breadcrumb: string; title: string }> = {
-  leads: { breadcrumb: 'Operations / Lead Triage Pipeline', title: 'Lead Triage & Outreach Pipeline' },
-  sla: { breadcrumb: 'Operations / SLA Escalations', title: '4-Day Working-Day SLA Monitor' },
-  quotations: { breadcrumb: 'Operations / Quotations', title: 'AI Quotation Workbench' },
-  approvals: { breadcrumb: 'Governance / Finance Approval Queue', title: 'Finance Approval Gate' },
-  audit: { breadcrumb: 'Governance / Audit & Settings', title: 'Audit Trail & Policy Configuration' },
-};
+type ActiveScreen = 'leads' | 'quotations' | 'audit';
 
 export default function App() {
-  const [authReady, setAuthReady] = useState(false);
-  const [signingIn, setSigningIn] = useState(false);
-  const [authError, setAuthError] = useState<string | null>(null);
-  const [profile, setProfile] = useState<UserProfile | null>(null);
-  const [orgConfig, setOrgConfig] = useState<OrgConfig | null>(null);
+  const [session, setSession] = useState<UserSession | null>(() => loadSession());
+  const [leads, setLeads] = useState<Lead[]>(() => loadLeads());
+  const [quotations, setQuotations] = useState<Quotation[]>(() => loadQuotations());
+  const [auditEntries, setAuditEntries] = useState<AuditEntry[]>(() => loadAuditLog());
 
-  // Realtime Firestore state
-  const [leads, setLeads] = useState<Lead[]>([]);
-  const [quotations, setQuotations] = useState<Quotation[]>([]);
-  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
-  const [dataLoading, setDataLoading] = useState(true);
+  const [activeScreen, setActiveScreen] = useState<ActiveScreen>('leads');
+  const [activeDeptFilter, setActiveDeptFilter] = useState<'ALL' | Department>('ALL');
+  const [contactFilter, setContactFilter] = useState<'ALL' | ContactStatus | 'SLA_BREACH'>('ALL');
+  const [searchQuery, setSearchQuery] = useState('');
 
-  // Navigation & UI state
-  const [activeNav, setActiveNav] = useState<NavSection>('leads');
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [triageOpen, setTriageOpen] = useState(false);
+  const [triageModalOpen, setTriageModalOpen] = useState(false);
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
   const [selectedQuotationId, setSelectedQuotationId] = useState<string | null>(null);
-  const [roleViewOverride, setRoleViewOverride] = useState<'admin' | 'approver' | 'pic'>('admin');
-  const [seedingSamples, setSeedingSamples] = useState(false);
 
-  // Lead table filters
-  const [searchQuery, setSearchQuery] = useState('');
-  const [deptFilter, setDeptFilter] = useState<'ALL' | Department>('ALL');
-  const [stageFilter, setStageFilter] = useState<'ALL' | WorkflowStage>('ALL');
-
-  // 1. Auth & User Profile Bootstrap
+  // Persist reactively to LocalStorage
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
-      if (!firebaseUser) {
-        setProfile(null);
-        setOrgConfig(null);
-        setLeads([]);
-        setQuotations([]);
-        setAuditLogs([]);
-        setAuthReady(true);
-        setDataLoading(false);
-        return;
-      }
+    saveSession(session);
+  }, [session]);
 
-      try {
-        const userProf = await ensureUserProfile(firebaseUser);
-        setProfile(userProf);
-        setRoleViewOverride(userProf.role);
-        const cfg = await loadOrgConfig(userProf);
-        setOrgConfig(cfg);
-      } catch (err) {
-        setAuthError(
-          err instanceof Error ? err.message : 'Unable to initialize user session.'
-        );
-      } finally {
-        setAuthReady(true);
-      }
-    });
-
-    return () => unsub();
-  }, []);
-
-  // 2. Realtime Firestore Subscriptions (only when authenticated)
   useEffect(() => {
-    if (!authReady || !profile) return;
+    saveLeads(leads);
+  }, [leads]);
 
-    setDataLoading(true);
-    const isBootstrapAdmin =
-      profile.email.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase();
+  useEffect(() => {
+    saveQuotations(quotations);
+  }, [quotations]);
 
-    const leadsCol = collection(db, 'leads');
-    const leadsQuery = isBootstrapAdmin
-      ? query(leadsCol)
-      : profile.role === 'approver' || profile.role === 'admin'
-        ? query(leadsCol, where('approverIds', 'array-contains', profile.uid))
-        : query(leadsCol, where('assignedPicId', '==', profile.uid));
+  useEffect(() => {
+    saveAuditLog(auditEntries);
+  }, [auditEntries]);
 
-    const quotesCol = collection(db, 'quotations');
-    const quotesQuery = isBootstrapAdmin
-      ? query(quotesCol)
-      : profile.role === 'approver' || profile.role === 'admin'
-        ? query(quotesCol, where('approverIds', 'array-contains', profile.uid))
-        : query(quotesCol, where('assignedPicId', '==', profile.uid));
+  const appendAudit = (
+    actor: UserSession,
+    action: AuditAction,
+    entityRef: string,
+    details: string
+  ) => {
+    const entry: AuditEntry = {
+      id: generateSafeId('aud'),
+      timestamp: new Date().toISOString(),
+      actorName: actor.name,
+      actorEmail: actor.email,
+      actorRole: actor.role,
+      department: actor.department,
+      action,
+      entityRef,
+      details,
+    };
+    setAuditEntries((prev) => [entry, ...prev]);
+  };
 
-    const logsCol = collection(db, 'auditLogs');
-    const logsQuery = isBootstrapAdmin
-      ? query(logsCol)
-      : profile.role === 'approver' || profile.role === 'admin'
-        ? query(logsCol, where('approverIds', 'array-contains', profile.uid))
-        : query(logsCol, where('actorUid', '==', profile.uid));
+  const handleStartSession = (newSession: UserSession) => {
+    setSession(newSession);
+    appendAudit(
+      newSession,
+      'SESSION_STARTED',
+      newSession.department,
+      `Started workspace session as ${newSession.role} (${newSession.email}).`
+    );
+  };
 
-    let leadsLoaded = false;
-    let quotesLoaded = false;
-    const markReady = () => {
-      if (leadsLoaded && quotesLoaded) setDataLoading(false);
+  const handleSignOut = () => {
+    setSelectedLeadId(null);
+    setSelectedQuotationId(null);
+    setSession(null);
+  };
+
+  // Step 1 & 2: Create Lead & Record received_at
+  const handleCreateLead = (input: NewLeadInput) => {
+    if (!session) return;
+    const nowIso = new Date().toISOString();
+    const leadCode = generateLeadCode(leads.length);
+    const newLead: Lead = {
+      id: generateSafeId('lead'),
+      leadCode,
+      companyName: input.companyName,
+      contactPerson: input.contactPerson,
+      contactPhone: input.contactPhone,
+      contactEmail: input.contactEmail,
+      entityType: input.entityType,
+      inquiryNotes: input.inquiryNotes,
+      targetDept: input.targetDept,
+      secondaryDepts: input.secondaryDepts,
+      assignedPicName: input.assignedPicName,
+      receivedAt: input.receivedAt || nowIso,
+      contactStatus: 'Pending Contact',
+      firstContactAt: '',
+      outreachChannel: '',
+      outreachNotes: '',
+      escalationRemindersSent: 0,
+      lastReminderAt: '',
+      scope: {
+        completed: false,
+        turnoverTier: '',
+        annualTurnoverMyr: 0,
+        monthlyTransactionVolume: 0,
+        headcount: 0,
+        sstRegistered: false,
+        requiresIncorporation: false,
+        accountingState: '',
+        requestedServices: Array.from(new Set([input.targetDept, ...input.secondaryDepts])),
+        scopeNotes: '',
+        updatedAt: '',
+      },
+      workflowStage: 'Outreach',
+      createdByName: session.name,
+      updatedAt: nowIso,
     };
 
-    const unsubLeads = onSnapshot(
-      leadsQuery,
-      (snap) => {
-        const items = snap.docs
-          .map((d) => ({ id: d.id, ...(d.data() as Omit<Lead, 'id'>) }))
-          .sort((a, b) => (b.receivedAtIso || '').localeCompare(a.receivedAtIso || ''));
-        setLeads(items);
-        leadsLoaded = true;
-        markReady();
-      },
-      (err) => {
-        handleFirestoreError(err, OperationType.LIST, 'leads');
-      }
+    setLeads((prev) => [newLead, ...prev]);
+    appendAudit(
+      session,
+      'LEAD_CREATED',
+      `${leadCode} · ${newLead.companyName}`,
+      `Routed inquiry to ${newLead.targetDept} (PIC: ${newLead.assignedPicName}). 4-working-day SLA clock initiated.`
     );
+    setActiveScreen('leads');
+    setSelectedLeadId(newLead.id);
+  };
 
-    const unsubQuotes = onSnapshot(
-      quotesQuery,
-      (snap) => {
-        const items = snap.docs
-          .map((d) => ({ id: d.id, ...(d.data() as Omit<Quotation, 'id'>) }))
-          .sort((a, b) => {
-            const ta = a.createdAt?.toMillis() ?? 0;
-            const tb = b.createdAt?.toMillis() ?? 0;
-            return tb - ta;
-          });
-        setQuotations(items);
-        quotesLoaded = true;
-        markReady();
-      },
-      (err) => {
-        handleFirestoreError(err, OperationType.LIST, 'quotations');
-      }
-    );
-
-    const unsubLogs = onSnapshot(
-      logsQuery,
-      (snap) => {
-        const items = snap.docs
-          .map((d) => ({ id: d.id, ...(d.data() as Omit<AuditLog, 'id'>) }))
-          .sort((a, b) => {
-            const ta = a.createdAt?.toMillis() ?? Date.now();
-            const tb = b.createdAt?.toMillis() ?? Date.now();
-            return tb - ta;
-          });
-        setAuditLogs(items);
-      },
-      (err) => {
-        handleFirestoreError(err, OperationType.LIST, 'auditLogs');
-      }
-    );
-
-    return () => {
-      unsubLeads();
-      unsubQuotes();
-      unsubLogs();
-    };
-  }, [authReady, profile]);
-
-  const handleSignIn = async () => {
-    setSigningIn(true);
-    setAuthError(null);
-    try {
-      await signInWithPopup(auth, googleProvider);
-    } catch (err) {
-      setAuthError(
-        err instanceof Error ? err.message : 'Google sign-in was cancelled or failed.'
-      );
-    } finally {
-      setSigningIn(false);
+  // Steps 2 & 3: Update PIC Contact Status & Freeze SLA Timer on Contacted
+  const handleUpdateOutreach = (
+    leadId: string,
+    payload: {
+      contactStatus: ContactStatus;
+      outreachChannel: OutreachChannel;
+      outreachNotes: string;
     }
+  ) => {
+    if (!session) return;
+    const nowIso = new Date().toISOString();
+    const targetLead = leads.find((l) => l.id === leadId);
+    if (!targetLead) return;
+
+    const firstContactAt =
+      payload.contactStatus === 'Contacted'
+        ? targetLead.firstContactAt || nowIso
+        : targetLead.firstContactAt;
+
+    const nextStage: WorkflowStage =
+      payload.contactStatus === 'Contacted'
+        ? targetLead.workflowStage === 'Triage' ||
+          targetLead.workflowStage === 'Outreach' ||
+          targetLead.workflowStage === 'Unreachable'
+          ? 'Scope'
+          : targetLead.workflowStage
+        : payload.contactStatus === 'Unreachable'
+          ? 'Unreachable'
+          : 'Outreach';
+
+    const updatedLead: Lead = {
+      ...targetLead,
+      contactStatus: payload.contactStatus,
+      firstContactAt,
+      outreachChannel: payload.outreachChannel,
+      outreachNotes: payload.outreachNotes,
+      workflowStage: nextStage,
+      updatedAt: nowIso,
+    };
+
+    setLeads((prev) => prev.map((l) => (l.id === leadId ? updatedLead : l)));
+    const sla = evaluateLeadSla(updatedLead);
+    appendAudit(
+      session,
+      'OUTREACH_UPDATED',
+      `${targetLead.leadCode} · ${targetLead.companyName}`,
+      `Contact status set to "${payload.contactStatus}" via ${payload.outreachChannel || 'Direct'}. SLA status: ${sla.label}.`
+    );
   };
 
-  const handleSignOut = async () => {
-    await signOut(auth);
+  // Step 5: Log SLA Escalation Reminder
+  const handleLogSlaReminder = (leadId: string) => {
+    if (!session) return;
+    const targetLead = leads.find((l) => l.id === leadId);
+    if (!targetLead) return;
+    const nowIso = new Date().toISOString();
+    const sla = evaluateLeadSla(targetLead);
+    const nextCount = targetLead.escalationRemindersSent + 1;
+
+    setLeads((prev) =>
+      prev.map((l) =>
+        l.id === leadId
+          ? {
+              ...l,
+              escalationRemindersSent: nextCount,
+              lastReminderAt: nowIso,
+              updatedAt: nowIso,
+            }
+          : l
+      )
+    );
+
+    appendAudit(
+      session,
+      'SLA_REMINDER_LOGGED',
+      `${targetLead.leadCode} · ${targetLead.companyName}`,
+      `Logged SLA BREACH reminder #${nextCount} for PIC ${targetLead.assignedPicName} (${sla.workingDaysElapsed} working days uncontacted).`
+    );
   };
 
-  const activeConfig = useMemo(() => {
-    if (orgConfig) return orgConfig;
-    if (profile) return buildDefaultOrgConfig(profile.uid, profile.displayName);
-    return buildDefaultOrgConfig('default', 'Operations');
-  }, [orgConfig, profile]);
+  // Step 4: Save Confirmed Client Scope
+  const handleSaveScope = (
+    leadId: string,
+    scopeInput: Omit<LeadScope, 'completed' | 'updatedAt'>
+  ) => {
+    if (!session) return;
+    const targetLead = leads.find((l) => l.id === leadId);
+    if (!targetLead) return;
+    const nowIso = new Date().toISOString();
 
+    const updatedLead: Lead = {
+      ...targetLead,
+      scope: {
+        ...scopeInput,
+        completed: true,
+        updatedAt: nowIso,
+      },
+      workflowStage:
+        targetLead.workflowStage === 'Triage' ||
+        targetLead.workflowStage === 'Outreach' ||
+        targetLead.workflowStage === 'Scope'
+          ? 'Quotation'
+          : targetLead.workflowStage,
+      updatedAt: nowIso,
+    };
+
+    setLeads((prev) => prev.map((l) => (l.id === leadId ? updatedLead : l)));
+    appendAudit(
+      session,
+      'SCOPE_LOGGED',
+      `${targetLead.leadCode} · ${targetLead.companyName}`,
+      `Logged service scope: Turnover ${formatMyr(scopeInput.annualTurnoverMyr)}, ${scopeInput.monthlyTransactionVolume} tx/mo, ${scopeInput.headcount} staff, services [${scopeInput.requestedServices.join(', ')}].`
+    );
+  };
+
+  // Step 6: Generate Quotation Draft (Enters Pending Approval)
+  const handleGenerateQuotation = (
+    leadId: string,
+    scopeInput: Omit<LeadScope, 'completed' | 'updatedAt'>
+  ) => {
+    if (!session) return;
+    const targetLead = leads.find((l) => l.id === leadId);
+    if (!targetLead) return;
+    const nowIso = new Date().toISOString();
+
+    const scopedLead: Lead = {
+      ...targetLead,
+      scope: {
+        ...scopeInput,
+        completed: true,
+        updatedAt: nowIso,
+      },
+      workflowStage: 'Approval',
+      updatedAt: nowIso,
+    };
+
+    const items = buildBaselineQuotationItems(scopedLead);
+    const totals = computeQuotationTotals(items);
+    const quoteNumber = generateQuoteNumber(quotations.length);
+
+    const newQuotation: Quotation = {
+      id: generateSafeId('qt'),
+      quoteNumber,
+      leadId: scopedLead.id,
+      companyName: scopedLead.companyName,
+      targetDept: scopedLead.targetDept,
+      lineItems: items,
+      ...totals,
+      legalRemarks: DEFAULT_LEGAL_REMARKS,
+      assumptions: DEFAULT_ASSUMPTIONS,
+      exclusions: DEFAULT_EXCLUSIONS,
+      status: 'Pending Approval',
+      isApproved: false,
+      approvedBy: '',
+      approvedAt: '',
+      dispatchChannel: '',
+      dispatchedAt: '',
+      dispatchedBy: '',
+      createdByName: session.name,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+
+    setLeads((prev) => prev.map((l) => (l.id === leadId ? scopedLead : l)));
+    setQuotations((prev) => [newQuotation, ...prev]);
+
+    appendAudit(
+      session,
+      'QUOTATION_GENERATED',
+      `${quoteNumber} · ${scopedLead.companyName}`,
+      `Generated Malaysian SME quotation draft (${items.length} line items, Year-1 ${formatMyr(totals.totalYearOneMyr)}). Entered Pending Approval queue.`
+    );
+
+    setSelectedLeadId(null);
+    setSelectedQuotationId(newQuotation.id);
+    setActiveScreen('quotations');
+  };
+
+  // Step 6 Edit Line Items (Locked once Dispatched)
+  const handleUpdateQuotationContent = (
+    quotationId: string,
+    payload: {
+      lineItems: QuotationLineItem[];
+      legalRemarks: string;
+      assumptions: string;
+      exclusions: string;
+    }
+  ) => {
+    if (!session) return;
+    const existing = quotations.find((q) => q.id === quotationId);
+    if (!existing || existing.status === 'Dispatched') return;
+
+    const nowIso = new Date().toISOString();
+    const totals = computeQuotationTotals(payload.lineItems);
+
+    setQuotations((prev) =>
+      prev.map((q) =>
+        q.id === quotationId
+          ? {
+              ...q,
+              lineItems: payload.lineItems,
+              legalRemarks: payload.legalRemarks,
+              assumptions: payload.assumptions,
+              exclusions: payload.exclusions,
+              ...totals,
+              updatedAt: nowIso,
+            }
+          : q
+      )
+    );
+
+    appendAudit(
+      session,
+      'QUOTATION_UPDATED',
+      `${existing.quoteNumber} · ${existing.companyName}`,
+      `Updated quotation line items (${payload.lineItems.length} items). Revised Year-1 total: ${formatMyr(totals.totalYearOneMyr)}.`
+    );
+  };
+
+  // Step 7: Administrator-Only Quotation Approval Gate
+  const handleToggleApproval = (quotationId: string, approved: boolean) => {
+    if (!session || session.role !== 'Administrator') return;
+    const existing = quotations.find((q) => q.id === quotationId);
+    if (!existing || existing.status === 'Dispatched') return;
+
+    const nowIso = new Date().toISOString();
+    setQuotations((prev) =>
+      prev.map((q) =>
+        q.id === quotationId
+          ? {
+              ...q,
+              isApproved: approved,
+              status: approved ? 'Approved' : 'Pending Approval',
+              approvedBy: approved ? `${session.name} (${session.email})` : '',
+              approvedAt: approved ? nowIso : '',
+              updatedAt: nowIso,
+            }
+          : q
+      )
+    );
+
+    appendAudit(
+      session,
+      approved ? 'QUOTATION_APPROVED' : 'QUOTATION_APPROVAL_REVOKED',
+      `${existing.quoteNumber} · ${existing.companyName}`,
+      approved
+        ? `Administrator ${session.name} approved quotation (Year-1 ${formatMyr(existing.totalYearOneMyr)}). Step 8 dispatch unlocked.`
+        : `Administrator ${session.name} unticked quotation approval. Step 8 dispatch re-locked.`
+    );
+  };
+
+  // Step 8: Gated Dispatch (Strict isApproved Guardrail + Permanent Lock)
+  const handleDispatchQuotation = (
+    quotationId: string,
+    channel: Exclude<DispatchChannel, ''>
+  ) => {
+    if (!session) return;
+    const existing = quotations.find((q) => q.id === quotationId);
+    if (!existing || !existing.isApproved || existing.status === 'Dispatched') return;
+
+    const nowIso = new Date().toISOString();
+    setQuotations((prev) =>
+      prev.map((q) =>
+        q.id === quotationId
+          ? {
+              ...q,
+              status: 'Dispatched',
+              dispatchChannel: channel,
+              dispatchedAt: nowIso,
+              dispatchedBy: session.name,
+              updatedAt: nowIso,
+            }
+          : q
+      )
+    );
+
+    setLeads((prev) =>
+      prev.map((l) =>
+        l.id === existing.leadId
+          ? { ...l, workflowStage: 'Dispatched', updatedAt: nowIso }
+          : l
+      )
+    );
+
+    appendAudit(
+      session,
+      'QUOTATION_DISPATCHED',
+      `${existing.quoteNumber} · ${existing.companyName}`,
+      `Dispatched Administrator-approved quotation via ${channel}. Line items permanently locked.`
+    );
+  };
+
+  // Derived indexes & SLA metrics
   const leadsById = useMemo(() => {
     const map: Record<string, Lead> = {};
     for (const lead of leads) map[lead.id] = lead;
@@ -253,639 +482,533 @@ export default function App() {
     return map;
   }, [quotations]);
 
-  const slaEvaluations = useMemo(() => {
+  const slaByLeadId = useMemo(() => {
     const map: Record<string, ReturnType<typeof evaluateLeadSla>> = {};
     for (const lead of leads) {
-      map[lead.id] = evaluateLeadSla(
-        lead,
-        activeConfig.slaWorkingDays,
-        activeConfig.publicHolidays
-      );
+      map[lead.id] = evaluateLeadSla(lead);
     }
     return map;
-  }, [leads, activeConfig]);
+  }, [leads]);
 
-  const activeBreachCount = useMemo(
+  const deptScopedLeads = useMemo(() => {
+    if (activeDeptFilter === 'ALL') return leads;
+    return leads.filter(
+      (l) => l.targetDept === activeDeptFilter || l.secondaryDepts.includes(activeDeptFilter)
+    );
+  }, [leads, activeDeptFilter]);
+
+  const deptScopedQuotations = useMemo(() => {
+    if (activeDeptFilter === 'ALL') return quotations;
+    return quotations.filter((q) => q.targetDept === activeDeptFilter);
+  }, [quotations, activeDeptFilter]);
+
+  const activeBreachLeads = useMemo(
     () =>
-      leads.filter(
-        (l) => l.contactStatus === 'Pending Contact' && slaEvaluations[l.id]?.isBreached
-      ).length,
-    [leads, slaEvaluations]
+      deptScopedLeads.filter(
+        (l) => l.contactStatus === 'Pending Contact' && slaByLeadId[l.id]?.isBreached
+      ),
+    [deptScopedLeads, slaByLeadId]
   );
 
   const pendingApprovalsCount = useMemo(
-    () => quotations.filter((q) => q.status === 'Pending Approval').length,
-    [quotations]
+    () => deptScopedQuotations.filter((q) => !q.isApproved).length,
+    [deptScopedQuotations]
   );
 
-  const totalPipelineValueMyr = useMemo(
-    () => quotations.reduce((acc, q) => acc + (q.totalContractValueMyr || 0), 0),
-    [quotations]
+  const totalPipelineMyr = useMemo(
+    () => deptScopedQuotations.reduce((sum, q) => sum + q.totalYearOneMyr, 0),
+    [deptScopedQuotations]
   );
 
-  const filteredLeads = useMemo(() => {
+  const visibleLeads = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    return leads.filter((lead) => {
-      if (deptFilter !== 'ALL' && lead.assignedDept !== deptFilter) return false;
-      if (stageFilter !== 'ALL' && lead.workflowStage !== stageFilter) return false;
+    return deptScopedLeads.filter((lead) => {
+      if (contactFilter === 'SLA_BREACH') {
+        if (!(lead.contactStatus === 'Pending Contact' && slaByLeadId[lead.id]?.isBreached)) {
+          return false;
+        }
+      } else if (contactFilter !== 'ALL' && lead.contactStatus !== contactFilter) {
+        return false;
+      }
+
       if (!q) return true;
       return (
         lead.companyName.toLowerCase().includes(q) ||
         lead.leadCode.toLowerCase().includes(q) ||
         lead.contactPerson.toLowerCase().includes(q) ||
-        lead.assignedPicName.toLowerCase().includes(q) ||
-        lead.serviceLines.some((s) => s.toLowerCase().includes(q))
+        lead.assignedPicName.toLowerCase().includes(q)
       );
     });
-  }, [leads, searchQuery, deptFilter, stageFilter]);
+  }, [deptScopedLeads, contactFilter, searchQuery, slaByLeadId]);
 
   const selectedLead = selectedLeadId ? leadsById[selectedLeadId] || null : null;
 
-  const handleLoadSamples = async () => {
-    if (!profile) return;
-    setSeedingSamples(true);
-    try {
-      await seedWorkspaceSamples(profile, activeConfig);
-    } finally {
-      setSeedingSamples(false);
-    }
-  };
-
-  if (!authReady) {
-    return (
-      <div className="min-h-screen bg-[#F8FAFC] flex items-center justify-center">
-        <div className="flex items-center gap-2.5 text-sm text-slate-600">
-          <Loader2 className="w-4 h-4 animate-spin text-slate-900" />
-          Loading Meridian Advisory Ops...
-        </div>
-      </div>
-    );
+  if (!session) {
+    return <SessionGate onStartSession={handleStartSession} />;
   }
-
-  if (!profile) {
-    return <SignInGate onSignIn={handleSignIn} loading={signingIn} error={authError} />;
-  }
-
-  const navItems: Array<{
-    id: NavSection;
-    label: string;
-    icon: typeof Inbox;
-    count?: number;
-    alert?: boolean;
-  }> = [
-    { id: 'leads', label: 'Lead Pipeline', icon: Inbox, count: leads.length },
-    {
-      id: 'sla',
-      label: 'SLA Escalations',
-      icon: BellRing,
-      count: activeBreachCount,
-      alert: activeBreachCount > 0,
-    },
-    { id: 'quotations', label: 'Quotations', icon: FileSpreadsheet, count: quotations.length },
-    {
-      id: 'approvals',
-      label: 'Approval Queue',
-      icon: CheckSquare,
-      count: pendingApprovalsCount,
-      alert: pendingApprovalsCount > 0,
-    },
-    { id: 'audit', label: 'Audit & Settings', icon: Settings },
-  ];
-
-  const effectiveRoleView = profile.role === 'admin' ? roleViewOverride : profile.role;
 
   return (
-    <div className="min-h-screen bg-[#F8FAFC] flex">
-      {/* Desktop Sidebar */}
-      <aside className="hidden lg:flex lg:flex-col lg:w-64 lg:fixed lg:inset-y-0 bg-white border-r border-slate-200 z-20">
-        <div className="px-6 h-16 border-b border-slate-200 flex items-center">
-          <span className="font-display text-base font-bold tracking-tight text-slate-900 whitespace-nowrap">
-            Meridian Ops
-          </span>
-        </div>
+    <div className="min-h-screen bg-[#FAFAFA] flex flex-col">
+      {/* Screen 1: Top Navigation Bar */}
+      <header className="bg-white border-b border-[#E3E3E3] sticky top-0 z-30">
+        <div className="max-w-[1400px] mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-4">
+          {/* Left: T.J. Wang 50th Anniversary Logo + Primary Screen Links */}
+          <div className="flex items-center gap-6 min-w-0">
+            <BrandLogo compact />
 
-        <nav className="flex-1 px-3 py-5 space-y-1">
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            const active = activeNav === item.id;
-            return (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => setActiveNav(item.id)}
-                className={`w-full flex items-center justify-between gap-3 px-3 py-2.5 text-sm rounded-lg transition-colors cursor-pointer ${
-                  active
-                    ? 'bg-slate-900 text-white font-medium'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-                }`}
-              >
-                <span className="flex items-center gap-2.5 truncate">
-                  <Icon className="w-4 h-4 shrink-0" />
-                  <span className="truncate">{item.label}</span>
-                </span>
-                {typeof item.count === 'number' && (
-                  <span
-                    className={`font-mono text-xs tabular-nums ${
-                      active
-                        ? 'text-slate-300'
-                        : item.alert
-                          ? 'text-red-700 font-semibold'
-                          : 'text-slate-400'
-                    }`}
-                  >
-                    {item.count}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </nav>
-
-        <div className="p-4 border-t border-slate-200 space-y-3">
-          <div className="min-w-0">
-            <p className="text-xs font-semibold text-slate-900 truncate">{profile.displayName}</p>
-            <p className="text-xs text-slate-500 truncate">
-              {profile.role === 'admin'
-                ? 'System Administrator'
-                : profile.role === 'approver'
-                  ? 'Finance Approver'
-                  : `${profile.department} PIC`}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={handleSignOut}
-            className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-slate-600 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg transition-colors cursor-pointer"
-          >
-            <LogOut className="w-3.5 h-3.5" />
-            Sign Out
-          </button>
-        </div>
-      </aside>
-
-      {/* Mobile Sidebar Overlay */}
-      {mobileMenuOpen && (
-        <div className="fixed inset-0 z-50 lg:hidden bg-slate-900/40 flex">
-          <div className="w-64 bg-white h-full flex flex-col border-r border-slate-200">
-            <div className="px-5 h-16 border-b border-slate-200 flex items-center justify-between">
-              <span className="font-display text-base font-bold text-slate-900">Meridian Ops</span>
-              <button
-                type="button"
-                onClick={() => setMobileMenuOpen(false)}
-                className="p-1.5 text-slate-500"
-                aria-label="Close navigation menu"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <nav className="flex-1 px-3 py-4 space-y-1">
-              {navItems.map((item) => {
-                const Icon = item.icon;
-                const active = activeNav === item.id;
+            <nav className="hidden md:flex items-center gap-5 text-sm font-medium">
+              {(
+                [
+                  { id: 'leads', label: 'Leads Pipeline', count: deptScopedLeads.length },
+                  { id: 'quotations', label: 'Quotations', count: deptScopedQuotations.length },
+                  { id: 'audit', label: 'Audit Log', count: auditEntries.length },
+                ] as const
+              ).map((tab) => {
+                const active = activeScreen === tab.id;
                 return (
                   <button
-                    key={item.id}
+                    key={tab.id}
                     type="button"
-                    onClick={() => {
-                      setActiveNav(item.id);
-                      setMobileMenuOpen(false);
-                    }}
-                    className={`w-full flex items-center justify-between gap-3 px-3 py-2.5 text-sm rounded-lg ${
-                      active ? 'bg-slate-900 text-white font-medium' : 'text-slate-600'
+                    onClick={() => setActiveScreen(tab.id)}
+                    className={`py-5 border-b-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-1.5 ${
+                      active
+                        ? 'border-[#CB3737] text-[#171717] font-semibold'
+                        : 'border-transparent text-neutral-500 hover:text-[#171717]'
                     }`}
                   >
-                    <span className="flex items-center gap-2.5">
-                      <Icon className="w-4 h-4" />
-                      {item.label}
+                    <span>{tab.label}</span>
+                    <span className="font-mono text-xs tabular-nums text-neutral-400">
+                      {tab.count}
                     </span>
-                    {typeof item.count === 'number' && (
-                      <span className="font-mono text-xs tabular-nums">{item.count}</span>
-                    )}
                   </button>
                 );
               })}
             </nav>
-            <div className="p-4 border-t border-slate-200">
+          </div>
+
+          {/* Right: Department Switcher, User Profile + Role Badge, Primary Action */}
+          <div className="flex items-center gap-3 shrink-0">
+            <select
+              aria-label="Active department switcher"
+              value={activeDeptFilter}
+              onChange={(e) => setActiveDeptFilter(e.target.value as 'ALL' | Department)}
+              className="px-2.5 py-1.5 text-xs font-medium bg-[#FAFAFA] border border-[#E3E3E3] rounded-lg text-neutral-700 focus:outline-none focus:border-[#CB3737]"
+            >
+              <option value="ALL">All Departments</option>
+              {DEPARTMENTS.map((dept) => (
+                <option key={dept} value={dept}>
+                  {dept}
+                </option>
+              ))}
+            </select>
+
+            <div className="hidden sm:flex items-center gap-2.5 pl-3 border-l border-[#E3E3E3]">
+              <div className="text-right leading-tight">
+                <p className="text-xs font-semibold text-[#171717] max-w-[140px] truncate">
+                  {session.name}
+                </p>
+                <p className="text-[11px] font-medium">
+                  <span
+                    className={
+                      session.role === 'Administrator'
+                        ? 'text-[#CB3737] font-semibold'
+                        : 'text-neutral-500'
+                    }
+                  >
+                    {session.role}
+                  </span>
+                  <span className="text-neutral-400"> · {session.department}</span>
+                </p>
+              </div>
               <button
                 type="button"
                 onClick={handleSignOut}
-                className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-slate-700 border border-slate-200 rounded-lg"
+                title="Switch user or role session"
+                className="p-2 text-neutral-400 hover:text-[#CB3737] rounded-lg hover:bg-[#FAFAFA] transition-colors cursor-pointer"
+                aria-label="Switch user session"
               >
-                <LogOut className="w-3.5 h-3.5" />
-                Sign Out
+                <LogOut className="w-4 h-4" />
               </button>
             </div>
-          </div>
-        </div>
-      )}
 
-      {/* Main Content Shell */}
-      <div className="flex-1 lg:pl-64 flex flex-col min-w-0">
-        {/* Contextual Top Bar (Strict 3-zone / Breadcrumb + Single Primary CTA) */}
-        <header className="h-16 bg-white border-b border-slate-200 px-4 sm:px-8 flex items-center justify-between gap-6 sticky top-0 z-10">
-          <div className="flex items-center gap-3 min-w-0">
             <button
               type="button"
-              onClick={() => setMobileMenuOpen(true)}
-              className="lg:hidden p-2 -ml-2 text-slate-600 hover:text-slate-900 rounded-lg"
-              aria-label="Open navigation menu"
+              onClick={() => setTriageModalOpen(true)}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-[#CB3737] hover:bg-[#B02D2D] rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
-              <Menu className="w-5 h-5" />
+              <Plus className="w-3.5 h-3.5" />
+              New Lead
             </button>
-            <span className="text-xs font-medium text-slate-500 truncate">
-              {SECTION_META[activeNav].breadcrumb}
-            </span>
           </div>
+        </div>
 
+        {/* Mobile Tab Row */}
+        <div className="md:hidden border-t border-[#E3E3E3] px-4 py-2 flex items-center justify-between gap-2 bg-[#FAFAFA]">
+          <div className="flex items-center gap-1">
+            {(
+              [
+                { id: 'leads', label: 'Leads' },
+                { id: 'quotations', label: 'Quotations' },
+                { id: 'audit', label: 'Audit' },
+              ] as const
+            ).map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveScreen(tab.id)}
+                className={`px-3 py-1 text-xs font-medium rounded-md ${
+                  activeScreen === tab.id
+                    ? 'bg-[#CB3737] text-white'
+                    : 'text-neutral-600'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
           <button
             type="button"
-            onClick={() => setTriageOpen(true)}
-            className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-slate-900 rounded-lg hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            onClick={handleSignOut}
+            className="text-xs font-medium text-neutral-600 flex items-center gap-1"
           >
-            <Plus className="w-3.5 h-3.5" />
-            Ingest Email Lead
+            {session.role}
+            <LogOut className="w-3.5 h-3.5" />
           </button>
-        </header>
+        </div>
+      </header>
 
-        {/* Main Workspace Canvas */}
-        <main className="flex-1 px-4 sm:px-8 py-7 max-w-[1380px] w-full mx-auto space-y-6">
-          {/* Page Title & Workspace Role Perspective Control */}
-          <div className="flex flex-wrap items-end justify-between gap-4">
-            <div>
-              <h1 className="font-display text-2xl font-bold tracking-tight text-slate-900">
-                {SECTION_META[activeNav].title}
-              </h1>
-              <p className="text-xs text-slate-500 mt-1">
-                Malaysian Corporate Advisory Operations · {activeConfig.slaWorkingDays}-Working-Day
-                Outreach SLA · Hard Finance Approval Gating
-              </p>
+      {/* Main Content Container */}
+      <main className="flex-1 max-w-[1400px] w-full mx-auto px-4 sm:px-6 py-7 space-y-6">
+        {/* Screen Heading */}
+        <div className="flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <h1 className="font-display text-2xl font-bold tracking-tight text-[#171717]">
+              {activeScreen === 'leads'
+                ? 'Leads Workbench & 4-Day SLA Pipeline'
+                : activeScreen === 'quotations'
+                  ? 'Quotation Workbench & Approval Gate'
+                  : 'Audit & Activity Log'}
+            </h1>
+            <p className="text-xs text-neutral-500 mt-1">
+              T.J. Wang Finance Department ·{' '}
+              {activeDeptFilter === 'ALL' ? 'All 5 Service Lines' : `${activeDeptFilter} View`} ·
+              Local Browser Storage (Zero-Cost)
+            </p>
+          </div>
+        </div>
+
+        {/* SCREEN 3: LEADS WORKBENCH / PIPELINE VIEW */}
+        {activeScreen === 'leads' && (
+          <div className="space-y-5">
+            {/* 4-Column KPI Strip */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="bg-white border border-[#E3E3E3] rounded-xl p-5">
+                <p className="text-xs text-neutral-500">Tracked Leads</p>
+                <p className="text-2xl font-bold text-[#171717] font-mono tabular-nums mt-1">
+                  {deptScopedLeads.length}
+                </p>
+                <p className="text-xs text-neutral-500 mt-1">
+                  {deptScopedLeads.filter((l) => l.contactStatus === 'Contacted').length} contacted
+                </p>
+              </div>
+
+              <div className="bg-white border border-[#E3E3E3] rounded-xl p-5">
+                <p className="text-xs text-neutral-500">SLA Breaches (&ge;4 Working Days)</p>
+                <p
+                  className={`text-2xl font-bold font-mono tabular-nums mt-1 ${
+                    activeBreachLeads.length > 0 ? 'text-[#CB3737]' : 'text-emerald-700'
+                  }`}
+                >
+                  {activeBreachLeads.length}
+                </p>
+                <p className="text-xs text-neutral-500 mt-1">Pending contact past 4d limit</p>
+              </div>
+
+              <div className="bg-white border border-[#E3E3E3] rounded-xl p-5">
+                <p className="text-xs text-neutral-500">Pending Admin Approval</p>
+                <p
+                  className={`text-2xl font-bold font-mono tabular-nums mt-1 ${
+                    pendingApprovalsCount > 0 ? 'text-[#EE6F57]' : 'text-[#171717]'
+                  }`}
+                >
+                  {pendingApprovalsCount}
+                </p>
+                <p className="text-xs text-neutral-500 mt-1">Awaiting Step 7 sign-off</p>
+              </div>
+
+              <div className="bg-white border border-[#E3E3E3] rounded-xl p-5">
+                <p className="text-xs text-neutral-500">Quoted Year-1 Value</p>
+                <p className="text-2xl font-bold text-[#171717] font-mono tabular-nums mt-1">
+                  {formatMyr(totalPipelineMyr)}
+                </p>
+                <p className="text-xs text-neutral-500 mt-1">
+                  {deptScopedQuotations.filter((q) => q.status === 'Dispatched').length} dispatched
+                </p>
+              </div>
             </div>
 
-            {profile.role === 'admin' && (
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-slate-500 whitespace-nowrap">View as:</span>
-                <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg">
-                  {(
-                    [
-                      { id: 'admin', label: 'Admin' },
-                      { id: 'approver', label: 'Finance Approver' },
-                      { id: 'pic', label: 'Dept PIC' },
-                    ] as const
-                  ).map((roleOpt) => (
-                    <button
-                      key={roleOpt.id}
-                      type="button"
-                      onClick={() => setRoleViewOverride(roleOpt.id)}
-                      className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
-                        roleViewOverride === roleOpt.id
-                          ? 'bg-white text-slate-900 shadow-xs'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      {roleOpt.label}
-                    </button>
-                  ))}
+            {/* Step 5 High-Visibility SLA Escalation Alert Strip */}
+            {activeBreachLeads.length > 0 && (
+              <div className="p-4 bg-[#CB3737]/8 border border-[#CB3737]/30 rounded-xl flex flex-wrap items-center justify-between gap-4">
+                <div className="flex items-center gap-3 text-xs text-[#7F1D1D]">
+                  <AlertTriangle className="w-4 h-4 text-[#CB3737] shrink-0" />
+                  <span>
+                    <strong className="text-[#CB3737]">
+                      SLA BREACH / OVERDUE ({activeBreachLeads.length}{' '}
+                      {activeBreachLeads.length === 1 ? 'lead' : 'leads'}):
+                    </strong>{' '}
+                    Uncontacted for 4 or more working days. Assigned PIC outreach is urgently
+                    required.
+                  </span>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => setContactFilter('SLA_BREACH')}
+                  className="px-3.5 py-1.5 text-xs font-semibold text-white bg-[#CB3737] hover:bg-[#B02D2D] rounded-lg transition-colors whitespace-nowrap cursor-pointer"
+                >
+                  View Escalations ({activeBreachLeads.length})
+                </button>
               </div>
             )}
-          </div>
 
-          {/* VIEW 1: LEAD TRIAGE PIPELINE */}
-          {activeNav === 'leads' && (
-            <div className="space-y-6">
-              {/* 4-Column Flat KPI Summary */}
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                <div className="bg-white border border-slate-200 rounded-xl p-5">
-                  <p className="text-xs text-slate-500">Total Leads Tracked</p>
-                  <p className="text-2xl font-bold text-slate-900 font-mono tabular-nums mt-1">
-                    {leads.length}
-                  </p>
-                  <p className="text-xs text-slate-500 mt-1">Across 5 service verticals</p>
+            {/* Pipeline Table Card */}
+            <div className="bg-white border border-[#E3E3E3] rounded-xl overflow-hidden">
+              {/* Filter Bar */}
+              <div className="px-5 py-3.5 border-b border-[#E3E3E3] flex flex-wrap items-center justify-between gap-3">
+                <div className="relative flex-1 min-w-[220px] max-w-sm">
+                  <Search className="w-3.5 h-3.5 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Search company, lead code, contact, or PIC..."
+                    className="w-full pl-8 pr-3 py-1.5 text-xs bg-[#FAFAFA] border border-[#E3E3E3] rounded-lg focus:outline-none focus:bg-white focus:border-[#CB3737]"
+                  />
                 </div>
 
-                <div className="bg-white border border-slate-200 rounded-xl p-5">
-                  <p className="text-xs text-slate-500">SLA Breaches (&ge;{activeConfig.slaWorkingDays}d)</p>
-                  <p
-                    className={`text-2xl font-bold font-mono tabular-nums mt-1 ${
-                      activeBreachCount > 0 ? 'text-red-700' : 'text-emerald-700'
-                    }`}
-                  >
-                    {activeBreachCount}
-                  </p>
-                  <p className="text-xs text-slate-500 mt-1">Uncontacted past SLA limit</p>
-                </div>
-
-                <div className="bg-white border border-slate-200 rounded-xl p-5">
-                  <p className="text-xs text-slate-500">Pending Finance Approval</p>
-                  <p
-                    className={`text-2xl font-bold font-mono tabular-nums mt-1 ${
-                      pendingApprovalsCount > 0 ? 'text-amber-700' : 'text-slate-900'
-                    }`}
-                  >
-                    {pendingApprovalsCount}
-                  </p>
-                  <p className="text-xs text-slate-500 mt-1">Awaiting Step 7 sign-off</p>
-                </div>
-
-                <div className="bg-white border border-slate-200 rounded-xl p-5">
-                  <p className="text-xs text-slate-500">Quoted Year-1 Pipeline</p>
-                  <p className="text-2xl font-bold text-slate-900 font-mono tabular-nums mt-1">
-                    {formatMyr(totalPipelineValueMyr)}
-                  </p>
-                  <p className="text-xs text-slate-500 mt-1">
-                    {quotations.filter((q) => q.status === 'Quotation Sent').length} dispatched
-                  </p>
+                <div className="flex flex-wrap items-center gap-1 p-1 bg-[#FAFAFA] border border-[#E3E3E3] rounded-lg">
+                  {(
+                    [
+                      { id: 'ALL', label: 'All Statuses' },
+                      { id: 'Pending Contact', label: 'Pending Contact' },
+                      { id: 'Contacted', label: 'Contacted' },
+                      { id: 'Unreachable', label: 'Unreachable' },
+                      {
+                        id: 'SLA_BREACH',
+                        label: `SLA Breaches (${activeBreachLeads.length})`,
+                      },
+                    ] as const
+                  ).map((item) => {
+                    const active = contactFilter === item.id;
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => setContactFilter(item.id)}
+                        className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+                          active
+                            ? item.id === 'SLA_BREACH'
+                              ? 'bg-[#CB3737] text-white'
+                              : 'bg-[#171717] text-white'
+                            : item.id === 'SLA_BREACH' && activeBreachLeads.length > 0
+                              ? 'text-[#CB3737] hover:bg-[#CB3737]/10'
+                              : 'text-neutral-600 hover:text-[#171717]'
+                        }`}
+                      >
+                        {item.label}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
-              {/* Active SLA Escalation Alert Strip */}
-              {activeBreachCount > 0 && (
-                <div className="p-4 bg-red-50 border border-red-200 rounded-xl flex flex-wrap items-center justify-between gap-4">
-                  <div className="flex items-center gap-3 text-xs text-red-900">
-                    <AlertTriangle className="w-4 h-4 text-red-700 shrink-0" />
-                    <span>
-                      <strong>
-                        {activeBreachCount} uncontacted lead{activeBreachCount === 1 ? '' : 's'}
-                      </strong>{' '}
-                      exceeded the {activeConfig.slaWorkingDays}-working-day outreach SLA. Review
-                      escalation alerts and trigger PIC follow-up.
-                    </span>
+              {/* Empty States vs Populated Table */}
+              {leads.length === 0 ? (
+                <div className="p-14 text-center space-y-4">
+                  <div className="space-y-1.5">
+                    <p className="text-sm font-semibold text-[#171717]">
+                      No inbound leads recorded yet
+                    </p>
+                    <p className="text-xs text-neutral-500 max-w-md mx-auto leading-relaxed">
+                      Start the 8-step T.J. Wang Finance Department workflow by triaging your first
+                      client inquiry across Co Sec, Accounting, Audit, Tax, or Payroll.
+                    </p>
                   </div>
                   <button
                     type="button"
-                    onClick={() => setActiveNav('sla')}
-                    className="px-3.5 py-1.5 text-xs font-semibold text-red-800 bg-white border border-red-200 rounded-lg hover:bg-red-100/60 transition-colors whitespace-nowrap cursor-pointer"
+                    onClick={() => setTriageModalOpen(true)}
+                    className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-[#CB3737] hover:bg-[#B02D2D] rounded-lg transition-colors cursor-pointer"
                   >
-                    Open SLA Escalations
+                    <Plus className="w-3.5 h-3.5" />
+                    Log First Inbound Lead (Step 1)
                   </button>
                 </div>
-              )}
-
-              {/* Search & Filter Toolbar */}
-              <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-                <div className="px-5 py-4 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3">
-                  <div className="relative flex-1 min-w-[220px] max-w-sm">
-                    <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                    <input
-                      type="text"
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      placeholder="Search company, lead code, PIC, or contact..."
-                      className="w-full pl-9 pr-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:bg-white focus:border-slate-400"
-                    />
-                  </div>
-
-                  <div className="flex flex-wrap items-center gap-2">
-                    <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg overflow-x-auto">
-                      <button
-                        type="button"
-                        onClick={() => setDeptFilter('ALL')}
-                        className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
-                          deptFilter === 'ALL'
-                            ? 'bg-white text-slate-900 shadow-xs'
-                            : 'text-slate-600 hover:text-slate-900'
-                        }`}
-                      >
-                        All Depts
-                      </button>
-                      {DEPARTMENTS.map((dept) => (
-                        <button
-                          key={dept}
-                          type="button"
-                          onClick={() => setDeptFilter(dept)}
-                          className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
-                            deptFilter === dept
-                              ? 'bg-white text-slate-900 shadow-xs'
-                              : 'text-slate-600 hover:text-slate-900'
-                          }`}
-                        >
-                          {getDeptShortCode(dept)}
-                        </button>
-                      ))}
-                    </div>
-
-                    <select
-                      value={stageFilter}
-                      onChange={(e) => setStageFilter(e.target.value as 'ALL' | WorkflowStage)}
-                      className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-lg text-slate-700"
-                    >
-                      <option value="ALL">All Stages</option>
-                      <option value="Outreach">Outreach</option>
-                      <option value="Scope">Scope</option>
-                      <option value="Quotation">Quotation</option>
-                      <option value="Approval">Approval</option>
-                      <option value="Dispatched">Dispatched</option>
-                      <option value="Disqualified">Disqualified</option>
-                    </select>
-                  </div>
+              ) : visibleLeads.length === 0 ? (
+                <div className="p-10 text-center text-xs text-neutral-500">
+                  No leads match the selected department, status, or search filter.
                 </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-[#FAFAFA] border-b border-[#E3E3E3] text-xs font-medium text-neutral-500">
+                        <th className="py-3 px-5">Lead &amp; Company</th>
+                        <th className="py-3 px-4">Department &amp; PIC</th>
+                        <th className="py-3 px-4">Assigned</th>
+                        <th className="py-3 px-4">Contact Status</th>
+                        <th className="py-3 px-4">4-Day SLA Tracker</th>
+                        <th className="py-3 px-4 text-right">Quotation</th>
+                        <th className="py-3 px-5 text-right">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#E3E3E3] text-xs">
+                      {visibleLeads.map((lead) => {
+                        const sla = slaByLeadId[lead.id];
+                        const quote = quotationByLeadId[lead.id];
+                        const isOverdue =
+                          lead.contactStatus === 'Pending Contact' && sla?.isBreached;
 
-                {/* Data Grid / Loading / Empty States */}
-                {dataLoading ? (
-                  <div className="p-6 space-y-3">
-                    {[1, 2, 3, 4].map((row) => (
-                      <div key={row} className="h-11 bg-slate-100 rounded-lg animate-pulse" />
-                    ))}
-                  </div>
-                ) : leads.length === 0 ? (
-                  <div className="p-12 text-center space-y-4">
-                    <div className="space-y-1">
-                      <p className="text-sm font-semibold text-slate-900">
-                        No corporate advisory leads yet
-                      </p>
-                      <p className="text-xs text-slate-500 max-w-md mx-auto">
-                        Ingest your first raw client email with the AI Triage Router or populate
-                        five sample Malaysian SME leads spanning all 8 workflow steps.
-                      </p>
-                    </div>
-                    <div className="flex flex-wrap items-center justify-center gap-3">
-                      <button
-                        type="button"
-                        onClick={() => setTriageOpen(true)}
-                        className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-slate-900 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                        Ingest First Email Lead
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleLoadSamples}
-                        disabled={seedingSamples}
-                        className="inline-flex items-center gap-2 px-4 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors cursor-pointer"
-                      >
-                        {seedingSamples ? (
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        ) : (
-                          <Database className="w-3.5 h-3.5" />
-                        )}
-                        Load Sample Malaysian Leads
-                      </button>
-                    </div>
-                  </div>
-                ) : filteredLeads.length === 0 ? (
-                  <div className="p-10 text-center text-xs text-slate-500">
-                    No leads match your current search or department filter.
-                  </div>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left border-collapse">
-                      <thead>
-                        <tr className="bg-slate-50 border-b border-slate-200 text-xs font-medium text-slate-500">
-                          <th className="py-3 px-5">Lead &amp; Entity</th>
-                          <th className="py-3 px-4">Service Lines &amp; PIC</th>
-                          <th className="py-3 px-4">Received</th>
-                          <th className="py-3 px-4">SLA Monitor</th>
-                          <th className="py-3 px-4">Workflow Stage</th>
-                          <th className="py-3 px-4 text-right">Quotation</th>
-                          <th className="py-3 px-5 text-right">Action</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100 text-xs">
-                        {filteredLeads.map((lead) => {
-                          const sla = slaEvaluations[lead.id];
-                          const quote = quotationByLeadId[lead.id];
-                          return (
-                            <tr
-                              key={lead.id}
-                              onClick={() => setSelectedLeadId(lead.id)}
-                              className={`cursor-pointer transition-colors ${
-                                sla?.isBreached && lead.contactStatus === 'Pending Contact'
-                                  ? 'bg-red-50/40 hover:bg-red-50/75'
-                                  : 'hover:bg-slate-50'
-                              }`}
-                            >
-                              <td className="py-3.5 px-5">
-                                <p className="font-semibold text-slate-900">{lead.companyName}</p>
-                                <p className="text-slate-500 mt-0.5 font-mono tabular-nums">
-                                  {lead.leadCode} ·{' '}
-                                  <span className="font-sans">{lead.contactPerson}</span>
-                                </p>
-                              </td>
-                              <td className="py-3.5 px-4">
-                                <p className="font-medium text-slate-800">{lead.assignedPicName}</p>
-                                <p className="text-slate-500 mt-0.5">
-                                  {lead.serviceLines.map(getDeptShortCode).join(' · ')}
-                                </p>
-                              </td>
-                              <td className="py-3.5 px-4 font-mono tabular-nums text-slate-600 whitespace-nowrap">
-                                {formatDateShort(lead.receivedAtIso)}
-                              </td>
-                              <td className="py-3.5 px-4 whitespace-nowrap font-mono tabular-nums">
+                        return (
+                          <tr
+                            key={lead.id}
+                            onClick={() => setSelectedLeadId(lead.id)}
+                            className={`cursor-pointer transition-colors ${
+                              isOverdue
+                                ? 'bg-[#CB3737]/5 hover:bg-[#CB3737]/10'
+                                : 'hover:bg-[#FAFAFA]'
+                            }`}
+                          >
+                            <td className="py-3.5 px-5">
+                              <p className="font-semibold text-[#171717]">{lead.companyName}</p>
+                              <p className="text-neutral-500 mt-0.5 font-mono tabular-nums">
+                                {lead.leadCode} ·{' '}
+                                <span className="font-sans">
+                                  {lead.contactPerson} ({lead.entityType})
+                                </span>
+                              </p>
+                            </td>
+                            <td className="py-3.5 px-4">
+                              <p className="font-medium text-[#171717]">{lead.assignedPicName}</p>
+                              <p className="text-neutral-500 mt-0.5">
+                                {lead.targetDept}
+                                {lead.secondaryDepts.length > 0
+                                  ? ` · ${lead.secondaryDepts.join(', ')}`
+                                  : ''}
+                              </p>
+                            </td>
+                            <td className="py-3.5 px-4 font-mono tabular-nums text-neutral-600 whitespace-nowrap">
+                              {formatDateShort(lead.receivedAt)}
+                            </td>
+                            <td className="py-3.5 px-4 whitespace-nowrap">
+                              <span
+                                className={
+                                  lead.contactStatus === 'Contacted'
+                                    ? 'font-semibold text-emerald-700'
+                                    : lead.contactStatus === 'Unreachable'
+                                      ? 'font-medium text-neutral-500'
+                                      : 'font-medium text-[#EE6F57]'
+                                }
+                              >
+                                {lead.contactStatus}
+                              </span>
+                              <span className="text-neutral-400"> · {lead.workflowStage}</span>
+                            </td>
+                            <td className="py-3.5 px-4 whitespace-nowrap font-mono tabular-nums">
+                              {isOverdue ? (
+                                <span className="inline-flex items-center gap-1 font-bold text-[#CB3737]">
+                                  <AlertTriangle className="w-3.5 h-3.5" />
+                                  SLA BREACH / OVERDUE ({sla.workingDaysElapsed}d)
+                                </span>
+                              ) : (
                                 <span
-                                  className={`font-sans font-semibold ${
+                                  className={`font-sans font-medium ${
                                     sla?.isBreached
-                                      ? 'text-red-700'
-                                      : sla?.isApproaching
-                                        ? 'text-amber-700'
-                                        : sla?.effectiveStatus === 'Compliant'
-                                          ? 'text-emerald-700'
-                                          : 'text-slate-600'
+                                      ? 'text-[#CB3737]'
+                                      : sla?.isFrozen
+                                        ? 'text-emerald-700'
+                                        : 'text-neutral-600'
                                   }`}
                                 >
                                   {sla?.label}
                                 </span>
-                              </td>
-                              <td className="py-3.5 px-4 whitespace-nowrap">
-                                <span className="font-medium text-slate-800">
-                                  {lead.workflowStage}
-                                </span>
-                                <span className="text-slate-400"> · {lead.contactStatus}</span>
-                              </td>
-                              <td className="py-3.5 px-4 text-right font-mono tabular-nums whitespace-nowrap">
-                                {quote ? (
-                                  <div>
-                                    <p className="font-semibold text-slate-900">
-                                      {formatMyr(quote.totalContractValueMyr)}
-                                    </p>
-                                    <p className="font-sans text-slate-500 mt-0.5">
-                                      {quote.status}
-                                    </p>
-                                  </div>
-                                ) : (
-                                  <span className="text-slate-400">—</span>
-                                )}
-                              </td>
-                              <td className="py-3.5 px-5 text-right whitespace-nowrap">
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setSelectedLeadId(lead.id);
-                                  }}
-                                  className="px-3 py-1.5 text-xs font-medium text-slate-900 bg-white border border-slate-200 rounded-md hover:bg-slate-100 transition-colors cursor-pointer"
-                                >
-                                  Manage
-                                </button>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
+                              )}
+                            </td>
+                            <td className="py-3.5 px-4 text-right font-mono tabular-nums whitespace-nowrap">
+                              {quote ? (
+                                <div>
+                                  <p className="font-semibold text-[#171717]">
+                                    {formatMyr(quote.totalYearOneMyr)}
+                                  </p>
+                                  <p className="font-sans text-neutral-500 mt-0.5">
+                                    {quote.status}
+                                  </p>
+                                </div>
+                              ) : (
+                                <span className="text-neutral-400">—</span>
+                              )}
+                            </td>
+                            <td className="py-3.5 px-5 text-right whitespace-nowrap">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSelectedLeadId(lead.id);
+                                }}
+                                className="px-3 py-1.5 text-xs font-medium text-[#171717] bg-white border border-[#E3E3E3] rounded-md hover:border-[#CB3737] hover:text-[#CB3737] transition-colors cursor-pointer"
+                              >
+                                Manage
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
-          )}
+          </div>
+        )}
 
-          {/* VIEW 2: STEP 5 SLA ESCALATIONS */}
-          {activeNav === 'sla' && (
-            <SlaEscalationsView
-              leads={leads}
-              orgConfig={activeConfig}
-              actor={profile}
-              onSelectLead={(lead) => setSelectedLeadId(lead.id)}
-            />
-          )}
+        {/* SCREEN 4: QUOTATION WORKBENCH (STEPS 6-8) */}
+        {activeScreen === 'quotations' && (
+          <QuotationWorkbench
+            quotations={deptScopedQuotations}
+            leadsById={leadsById}
+            selectedQuotationId={selectedQuotationId}
+            onSelectQuotation={(id) => setSelectedQuotationId(id)}
+            session={session}
+            onUpdateQuotationContent={handleUpdateQuotationContent}
+            onToggleApproval={handleToggleApproval}
+            onDispatchQuotation={handleDispatchQuotation}
+          />
+        )}
 
-          {/* VIEW 3 & 4: QUOTATION WORKBENCH & FINANCE APPROVAL QUEUE */}
-          {(activeNav === 'quotations' || activeNav === 'approvals') && (
-            <QuotationWorkbench
-              quotations={quotations}
-              leadsById={leadsById}
-              selectedQuotationId={selectedQuotationId}
-              onSelectQuotation={(id) => setSelectedQuotationId(id)}
-              actor={profile}
-              effectiveRoleView={effectiveRoleView}
-              initialFilter={activeNav === 'approvals' ? 'pending_approval' : 'all'}
-            />
-          )}
+        {/* SCREEN 5: AUDIT & ACTIVITY LOG */}
+        {activeScreen === 'audit' && <AuditLogView entries={auditEntries} />}
+      </main>
 
-          {/* VIEW 5: IMMUTABLE AUDIT TRAIL & OPERATIONS SETTINGS */}
-          {activeNav === 'audit' && (
-            <AuditSettingsView
-              auditLogs={auditLogs}
-              orgConfig={activeConfig}
-              actor={profile}
-              onConfigSaved={(next) => setOrgConfig(next)}
-            />
-          )}
-        </main>
-      </div>
-
-      {/* Step 1 Inbound Email AI Triage Modal */}
+      {/* Screen 2: Inbound Triage Modal (Step 1) */}
       <InboundTriageModal
-        open={triageOpen}
-        onClose={() => setTriageOpen(false)}
-        actor={profile}
-        orgConfig={activeConfig}
-        onLeadCreated={(lead) => {
-          setActiveNav('leads');
-          setSelectedLeadId(lead.id);
-        }}
+        open={triageModalOpen}
+        onClose={() => setTriageModalOpen(false)}
+        session={session}
+        onCreateLead={handleCreateLead}
       />
 
-      {/* Steps 1-6 Lead Detail Workspace Drawer */}
+      {/* Steps 2-6 Lead Detail Workspace Drawer */}
       <LeadDetailDrawer
         lead={selectedLead}
         linkedQuotation={selectedLead ? quotationByLeadId[selectedLead.id] : undefined}
-        actor={profile}
-        orgConfig={activeConfig}
         onClose={() => setSelectedLeadId(null)}
+        onUpdateOutreach={handleUpdateOutreach}
+        onLogSlaReminder={handleLogSlaReminder}
+        onSaveScope={handleSaveScope}
+        onGenerateQuotation={handleGenerateQuotation}
         onOpenQuotation={(quotationId) => {
           setSelectedLeadId(null);
           setSelectedQuotationId(quotationId);
-          setActiveNav('quotations');
+          setActiveScreen('quotations');
         }}
       />
     </div>

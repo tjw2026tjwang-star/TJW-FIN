@@ -4,38 +4,31 @@ import {
   Copy,
   Download,
   ExternalLink,
-  Loader2,
   Lock,
   Mail,
   MessageSquare,
   Plus,
   Send,
+  ShieldAlert,
   ShieldCheck,
   Trash2,
-  XCircle,
 } from 'lucide-react';
 import {
-  SERVICE_CATEGORIES,
+  DEPARTMENTS,
   type BillingFrequency,
+  type Department,
+  type DispatchChannel,
   type Lead,
   type Quotation,
   type QuotationLineItem,
   type QuotationStatus,
-  type ServiceCategory,
-  type UserProfile,
+  type UserSession,
 } from '../types';
-import { computeQuotationTotals, formatDateTime, formatMyr } from '../lib/sla';
+import { computeQuotationTotals } from '../lib/pricing';
+import { formatDateTime, formatMyr, generateSafeId } from '../lib/sla';
 import {
-  approveQuotation,
-  dispatchQuotation,
-  fetchQuotationLineItems,
-  rejectQuotation,
-  saveQuotationDraftOrSubmit,
-  type EditableLineItem,
-} from '../lib/firestoreService';
-import {
-  buildEmailProposalDraft,
-  buildWhatsAppProposalSummary,
+  buildEmailProposal,
+  buildWhatsAppProposal,
   downloadQuotationPdf,
 } from '../lib/pdf';
 
@@ -44,9 +37,18 @@ interface QuotationWorkbenchProps {
   leadsById: Record<string, Lead>;
   selectedQuotationId: string | null;
   onSelectQuotation: (id: string) => void;
-  actor: UserProfile;
-  effectiveRoleView: 'pic' | 'approver' | 'admin';
-  initialFilter?: 'all' | 'pending_approval';
+  session: UserSession;
+  onUpdateQuotationContent: (
+    quotationId: string,
+    payload: {
+      lineItems: QuotationLineItem[];
+      legalRemarks: string;
+      assumptions: string;
+      exclusions: string;
+    }
+  ) => void;
+  onToggleApproval: (quotationId: string, approved: boolean) => void;
+  onDispatchQuotation: (quotationId: string, channel: Exclude<DispatchChannel, ''>) => void;
 }
 
 export function QuotationWorkbench({
@@ -54,377 +56,231 @@ export function QuotationWorkbench({
   leadsById,
   selectedQuotationId,
   onSelectQuotation,
-  actor,
-  effectiveRoleView,
-  initialFilter = 'all',
+  session,
+  onUpdateQuotationContent,
+  onToggleApproval,
+  onDispatchQuotation,
 }: QuotationWorkbenchProps) {
-  const [statusFilter, setStatusFilter] = useState<string>(
-    initialFilter === 'pending_approval' ? 'Pending Approval' : 'All'
-  );
-  const [lineItems, setLineItems] = useState<EditableLineItem[]>([]);
-  const [deletedIds, setDeletedIds] = useState<string[]>([]);
-  const [loadingItems, setLoadingItems] = useState(false);
-
-  const [scopeNotes, setScopeNotes] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'All' | QuotationStatus>('All');
+  const [lineItems, setLineItems] = useState<QuotationLineItem[]>([]);
   const [legalRemarks, setLegalRemarks] = useState('');
   const [assumptions, setAssumptions] = useState('');
   const [exclusions, setExclusions] = useState('');
-
-  // Step 7 Approval state
-  const [approvalChecked, setApprovalChecked] = useState(false);
-  const [showRejectBox, setShowRejectBox] = useState(false);
-  const [rejectionFeedback, setRejectionFeedback] = useState('');
-
-  // Step 8 Dispatch feedback
-  const [copiedWhatsApp, setCopiedWhatsApp] = useState(false);
-  const [working, setWorking] = useState(false);
-  const [banner, setBanner] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
-
-  useEffect(() => {
-    setStatusFilter(initialFilter === 'pending_approval' ? 'Pending Approval' : 'All');
-  }, [initialFilter]);
+  const [hasUnsavedEdits, setHasUnsavedEdits] = useState(false);
+  const [copiedMsg, setCopiedMsg] = useState(false);
+  const [banner, setBanner] = useState<string | null>(null);
 
   const filteredQuotations = useMemo(() => {
     if (statusFilter === 'All') return quotations;
     return quotations.filter((q) => q.status === statusFilter);
   }, [quotations, statusFilter]);
 
-  const selectedQuotation = useMemo(() => {
+  const selected = useMemo(() => {
     if (selectedQuotationId) {
-      const found = quotations.find((q) => q.id === selectedQuotationId);
-      if (found) return found;
+      const match = quotations.find((q) => q.id === selectedQuotationId);
+      if (match) return match;
     }
     return filteredQuotations[0] || quotations[0] || null;
   }, [quotations, filteredQuotations, selectedQuotationId]);
 
-  const linkedLead = selectedQuotation ? leadsById[selectedQuotation.leadId] : undefined;
+  const linkedLead = selected ? leadsById[selected.leadId] : undefined;
 
   useEffect(() => {
-    if (!selectedQuotation) {
+    if (!selected) {
       setLineItems([]);
       return;
     }
-    setScopeNotes(selectedQuotation.scopeNotes || '');
-    setLegalRemarks(selectedQuotation.legalRemarks || '');
-    setAssumptions(selectedQuotation.assumptions || '');
-    setExclusions(selectedQuotation.exclusions || '');
-    setApprovalChecked(false);
-    setShowRejectBox(false);
-    setRejectionFeedback('');
-    setDeletedIds([]);
+    setLineItems(selected.lineItems);
+    setLegalRemarks(selected.legalRemarks);
+    setAssumptions(selected.assumptions);
+    setExclusions(selected.exclusions);
+    setHasUnsavedEdits(false);
     setBanner(null);
-
-    let cancelled = false;
-    setLoadingItems(true);
-    fetchQuotationLineItems(selectedQuotation.id, actor)
-      .then((items) => {
-        if (!cancelled) {
-          setLineItems(
-            items.map((item) => ({
-              id: item.id,
-              serviceCategory: item.serviceCategory,
-              description: item.description,
-              deliverables: item.deliverables,
-              frequency: item.frequency,
-              quantity: item.quantity,
-              unitPriceMyr: item.unitPriceMyr,
-            }))
-          );
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setBanner({
-            type: 'error',
-            text: err instanceof Error ? err.message : 'Unable to load quotation line items.',
-          });
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingItems(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedQuotation?.id, selectedQuotation?.status, actor]);
+  }, [selected?.id, selected?.updatedAt]);
 
   const liveTotals = useMemo(() => computeQuotationTotals(lineItems), [lineItems]);
 
-  const isEditable =
-    selectedQuotation !== null &&
-    (selectedQuotation.status === 'Draft' || selectedQuotation.status === 'Rejected');
+  const isDispatched = selected?.status === 'Dispatched';
+  const isLockedFromEdit = isDispatched;
+  const isAdministrator = session.role === 'Administrator';
 
-  const canApprove =
-    (actor.role === 'admin' || actor.role === 'approver') &&
-    effectiveRoleView !== 'pic';
-
-  const handleUpdateLine = (index: number, patch: Partial<EditableLineItem>) => {
+  const updateItem = (idx: number, patch: Partial<QuotationLineItem>) => {
+    if (isLockedFromEdit) return;
     setLineItems((prev) =>
-      prev.map((item, idx) => (idx === index ? { ...item, ...patch } : item))
+      prev.map((item, i) => {
+        if (i !== idx) return item;
+        const next = { ...item, ...patch };
+        const qty = Math.max(1, Math.floor(Number(next.quantity) || 1));
+        const unit = Math.max(0, Number(next.unitPriceMyr) || 0);
+        return {
+          ...next,
+          quantity: qty,
+          unitPriceMyr: unit,
+          lineTotalMyr: Math.round(qty * unit * 100) / 100,
+        };
+      })
     );
+    setHasUnsavedEdits(true);
   };
 
-  const handleAddLine = () => {
+  const addLineItem = () => {
+    if (isLockedFromEdit || !selected) return;
     setLineItems((prev) => [
       ...prev,
       {
-        serviceCategory: 'Advisory',
+        id: generateSafeId('li'),
+        dept: selected.targetDept,
         description: '',
         deliverables: '',
         frequency: 'One-off',
         quantity: 1,
         unitPriceMyr: 0,
+        lineTotalMyr: 0,
       },
     ]);
+    setHasUnsavedEdits(true);
   };
 
-  const handleRemoveLine = (index: number) => {
-    const target = lineItems[index];
-    if (target?.id) {
-      setDeletedIds((prev) => [...prev, target.id!]);
-    }
-    setLineItems((prev) => prev.filter((_, idx) => idx !== index));
+  const removeLineItem = (idx: number) => {
+    if (isLockedFromEdit) return;
+    setLineItems((prev) => prev.filter((_, i) => i !== idx));
+    setHasUnsavedEdits(true);
   };
 
-  const handleSaveOrSubmit = async (submitForApproval: boolean) => {
-    if (!selectedQuotation) return;
-    if (lineItems.length === 0) {
-      setBanner({ type: 'error', text: 'Add at least one fee line item before saving.' });
-      return;
-    }
-    setWorking(true);
-    setBanner(null);
-    try {
-      await saveQuotationDraftOrSubmit(
-        selectedQuotation,
-        { scopeNotes, legalRemarks, assumptions, exclusions },
+  const handleSaveEdits = () => {
+    if (!selected || isLockedFromEdit) return;
+    onUpdateQuotationContent(selected.id, {
+      lineItems,
+      legalRemarks,
+      assumptions,
+      exclusions,
+    });
+    setHasUnsavedEdits(false);
+    setBanner('Quotation line items and fee totals saved.');
+  };
+
+  const previewQuotation: Quotation | null = selected
+    ? {
+        ...selected,
         lineItems,
-        deletedIds,
-        submitForApproval,
-        actor
-      );
-      setDeletedIds([]);
-      setBanner({
-        type: 'success',
-        text: submitForApproval
-          ? 'Quotation submitted to Finance Approval Queue (Step 7).'
-          : 'Draft quotation and itemized fees saved.',
-      });
-    } catch (err) {
-      setBanner({
-        type: 'error',
-        text: err instanceof Error ? err.message : 'Unable to save quotation.',
-      });
-    } finally {
-      setWorking(false);
-    }
-  };
+        ...liveTotals,
+        legalRemarks,
+        assumptions,
+        exclusions,
+      }
+    : null;
 
-  const handleApprove = async () => {
-    if (!selectedQuotation || !approvalChecked) return;
-    setWorking(true);
-    setBanner(null);
-    try {
-      await approveQuotation(selectedQuotation, actor);
-      setBanner({
-        type: 'success',
-        text: `Finance Approval recorded by ${actor.displayName}. Client proposal dispatch (Step 8) is now unlocked.`,
-      });
-    } catch (err) {
-      setBanner({
-        type: 'error',
-        text: err instanceof Error ? err.message : 'Unable to approve quotation.',
-      });
-    } finally {
-      setWorking(false);
-    }
-  };
+  const whatsappPreview = useMemo(() => {
+    if (!previewQuotation) return null;
+    return buildWhatsAppProposal(previewQuotation, linkedLead);
+  }, [previewQuotation, linkedLead]);
 
-  const handleReject = async () => {
-    if (!selectedQuotation) return;
-    if (!rejectionFeedback.trim()) {
-      setBanner({ type: 'error', text: 'Provide amendment feedback before rejecting.' });
-      return;
-    }
-    setWorking(true);
-    setBanner(null);
-    try {
-      await rejectQuotation(selectedQuotation, rejectionFeedback, actor);
-      setShowRejectBox(false);
-      setRejectionFeedback('');
-      setBanner({
-        type: 'success',
-        text: 'Quotation returned to Department PIC with feedback notes.',
+  const handleDispatch = async (channel: 'Email' | 'WhatsApp') => {
+    if (!selected || !previewQuotation || !selected.isApproved) return;
+    if (hasUnsavedEdits && !isDispatched) {
+      onUpdateQuotationContent(selected.id, {
+        lineItems,
+        legalRemarks,
+        assumptions,
+        exclusions,
       });
-    } catch (err) {
-      setBanner({
-        type: 'error',
-        text: err instanceof Error ? err.message : 'Unable to reject quotation.',
-      });
-    } finally {
-      setWorking(false);
+      setHasUnsavedEdits(false);
     }
-  };
 
-  const resolvedLineItemsForOutput: QuotationLineItem[] = useMemo(() => {
-    if (!selectedQuotation) return [];
-    return lineItems.map((item, idx) => ({
-      id: item.id || `tmp_${idx}`,
-      quotationId: selectedQuotation.id,
-      serviceCategory: item.serviceCategory,
-      description: item.description,
-      deliverables: item.deliverables,
-      frequency: item.frequency,
-      quantity: Math.max(1, Number(item.quantity) || 1),
-      unitPriceMyr: Number(item.unitPriceMyr) || 0,
-      lineTotalMyr: Math.max(1, Number(item.quantity) || 1) * (Number(item.unitPriceMyr) || 0),
-      assignedPicId: selectedQuotation.assignedPicId,
-      createdBy: selectedQuotation.createdBy,
-      approverIds: selectedQuotation.approverIds,
-    }));
-  }, [lineItems, selectedQuotation]);
+    if (channel === 'Email') {
+      downloadQuotationPdf(previewQuotation, linkedLead);
+      const emailDraft = buildEmailProposal(previewQuotation, linkedLead);
+      const a = document.createElement('a');
+      a.href = emailDraft.mailtoUrl;
+      a.click();
+    } else if (whatsappPreview) {
+      if (navigator.clipboard) {
+        await navigator.clipboard.writeText(whatsappPreview.message);
+        setCopiedMsg(true);
+        setTimeout(() => setCopiedMsg(false), 2600);
+      }
+    }
 
-  const handleDownloadPdf = () => {
-    if (!selectedQuotation) return;
-    downloadQuotationPdf(
-      { ...selectedQuotation, ...liveTotals, legalRemarks, assumptions, exclusions },
-      linkedLead,
-      resolvedLineItemsForOutput
+    if (selected.status !== 'Dispatched') {
+      onDispatchQuotation(selected.id, channel);
+    }
+    setBanner(
+      channel === 'Email'
+        ? 'Approved quotation dispatched via Email + PDF. Line items are now permanently locked.'
+        : 'Approved WhatsApp proposal copied and marked Dispatched. Line items are now permanently locked.'
     );
   };
 
-  const handleDispatch = async (channel: 'Email' | 'WhatsApp') => {
-    if (!selectedQuotation || !selectedQuotation.isApproved) return;
-    setWorking(true);
-    setBanner(null);
-    try {
-      if (channel === 'Email') {
-        downloadQuotationPdf(selectedQuotation, linkedLead, resolvedLineItemsForOutput);
-        const draft = buildEmailProposalDraft(selectedQuotation, linkedLead, resolvedLineItemsForOutput);
-        const a = document.createElement('a');
-        a.href = draft.mailtoUrl;
-        a.click();
-      } else {
-        const { message } = buildWhatsAppProposalSummary(
-          selectedQuotation,
-          linkedLead,
-          resolvedLineItemsForOutput
-        );
-        if (navigator.clipboard) {
-          await navigator.clipboard.writeText(message);
-          setCopiedWhatsApp(true);
-          setTimeout(() => setCopiedWhatsApp(false), 3000);
-        }
-      }
-
-      if (selectedQuotation.status === 'Approved') {
-        await dispatchQuotation(selectedQuotation, channel, actor);
-      }
-
-      setBanner({
-        type: 'success',
-        text:
-          channel === 'Email'
-            ? 'Official PDF downloaded and Email proposal dispatch logged.'
-            : 'WhatsApp proposal summary copied and dispatch logged.',
-      });
-    } catch (err) {
-      setBanner({
-        type: 'error',
-        text: err instanceof Error ? err.message : 'Unable to dispatch quotation.',
-      });
-    } finally {
-      setWorking(false);
-    }
-  };
-
   const statusTone = (status: QuotationStatus) => {
-    switch (status) {
-      case 'Approved':
-        return 'text-emerald-700';
-      case 'Quotation Sent':
-        return 'text-slate-900';
-      case 'Pending Approval':
-        return 'text-amber-700';
-      case 'Rejected':
-        return 'text-red-700';
-      default:
-        return 'text-slate-500';
-    }
+    if (status === 'Dispatched') return 'text-[#171717] font-semibold';
+    if (status === 'Approved') return 'text-emerald-700 font-semibold';
+    return 'text-[#EE6F57] font-semibold';
   };
-
-  const whatsappPreview = useMemo(() => {
-    if (!selectedQuotation) return null;
-    return buildWhatsAppProposalSummary(selectedQuotation, linkedLead, resolvedLineItemsForOutput);
-  }, [selectedQuotation, linkedLead, resolvedLineItemsForOutput]);
 
   return (
-    <div className="space-y-6">
-      {/* Filter Bar */}
+    <div className="space-y-5">
+      {/* Status filter bar */}
       <div className="flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg overflow-x-auto">
-          {['All', 'Draft', 'Pending Approval', 'Approved', 'Rejected', 'Quotation Sent'].map(
-            (tab) => (
-              <button
-                key={tab}
-                type="button"
-                onClick={() => setStatusFilter(tab)}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                  statusFilter === tab
-                    ? 'bg-white text-slate-900 shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                {tab}
-              </button>
-            )
-          )}
+        <div className="flex items-center gap-1 p-1 bg-white border border-[#E3E3E3] rounded-lg overflow-x-auto">
+          {(['All', 'Pending Approval', 'Approved', 'Dispatched'] as const).map((tab) => (
+            <button
+              key={tab}
+              type="button"
+              onClick={() => setStatusFilter(tab)}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                statusFilter === tab
+                  ? 'bg-[#CB3737] text-white'
+                  : 'text-neutral-600 hover:text-[#171717]'
+              }`}
+            >
+              {tab}
+            </button>
+          ))}
         </div>
 
-        <p className="text-xs text-slate-500 font-mono tabular-nums">
+        <span className="text-xs text-neutral-500 font-mono tabular-nums">
           {filteredQuotations.length} quotation{filteredQuotations.length === 1 ? '' : 's'}
-        </p>
+        </span>
       </div>
 
       {filteredQuotations.length === 0 ? (
-        <div className="bg-white border border-slate-200 rounded-xl p-12 text-center space-y-2">
-          <p className="text-sm font-semibold text-slate-900">
-            No quotations in {statusFilter === 'All' ? 'workspace' : `"${statusFilter}"`}
+        <div className="bg-white border border-[#E3E3E3] rounded-xl p-12 text-center space-y-2">
+          <p className="text-sm font-semibold text-[#171717]">
+            {quotations.length === 0
+              ? 'No quotations generated yet'
+              : `No quotations in "${statusFilter}" status`}
           </p>
-          <p className="text-xs text-slate-500 max-w-md mx-auto">
-            Select a contacted lead from the Lead Triage Pipeline, complete Step 4 discovery scope,
-            and generate an AI-assisted Malaysian corporate fee quotation.
+          <p className="text-xs text-neutral-500 max-w-md mx-auto leading-relaxed">
+            Open a contacted lead in the Leads Pipeline, log confirmed Step 4 service scope
+            specifications, and run the Step 6 Malaysian SME quotation engine to generate a draft.
           </p>
         </div>
       ) : (
         <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
-          {/* Left Ledger List */}
-          <div className="xl:col-span-4 bg-white border border-slate-200 rounded-xl divide-y divide-slate-100 overflow-hidden">
+          {/* Left Quotation List */}
+          <div className="xl:col-span-4 bg-white border border-[#E3E3E3] rounded-xl divide-y divide-[#E3E3E3] overflow-hidden">
             {filteredQuotations.map((q) => {
-              const active = selectedQuotation?.id === q.id;
+              const active = selected?.id === q.id;
               return (
                 <button
                   key={q.id}
                   type="button"
                   onClick={() => onSelectQuotation(q.id)}
                   className={`w-full text-left px-4 py-3.5 transition-colors cursor-pointer ${
-                    active ? 'bg-slate-50' : 'bg-white hover:bg-slate-50/70'
+                    active ? 'bg-[#FAFAFA]' : 'bg-white hover:bg-[#FAFAFA]/70'
                   }`}
                 >
                   <div className="flex items-center justify-between gap-2 text-xs">
-                    <span className="font-mono font-medium text-slate-500 tabular-nums">
-                      {q.quoteNumber}
-                    </span>
-                    <span className={`font-medium ${statusTone(q.status)}`}>{q.status}</span>
+                    <span className="font-mono text-neutral-500 tabular-nums">{q.quoteNumber}</span>
+                    <span className={statusTone(q.status)}>{q.status}</span>
                   </div>
-                  <p className="text-sm font-semibold text-slate-900 truncate mt-1">
+                  <p className="text-sm font-semibold text-[#171717] truncate mt-1">
                     {q.companyName}
                   </p>
-                  <div className="flex items-center justify-between gap-2 text-xs text-slate-500 mt-1.5 font-mono tabular-nums">
-                    <span>Year-1 {formatMyr(q.totalContractValueMyr)}</span>
+                  <div className="flex items-center justify-between gap-2 text-xs text-neutral-500 mt-1.5 font-mono tabular-nums">
+                    <span>Year-1 {formatMyr(q.totalYearOneMyr)}</span>
                     <span className="font-sans">
-                      {q.isApproved ? 'Approved Gate' : 'Unapproved'}
+                      {q.isApproved ? 'Approved' : 'Approval Pending'}
                     </span>
                   </div>
                 </button>
@@ -432,565 +288,491 @@ export function QuotationWorkbench({
             })}
           </div>
 
-          {/* Right Quotation Detail Workbench */}
-          {selectedQuotation && (
-            <div className="xl:col-span-8 bg-white border border-slate-200 rounded-xl overflow-hidden">
-              {/* Top Header */}
-              <div className="px-6 py-5 border-b border-slate-200 flex flex-wrap items-start justify-between gap-4">
+          {/* Right Interactive Quotation Editor & Approval/Dispatch Gate */}
+          {selected && previewQuotation && (
+            <div className="xl:col-span-8 bg-white border border-[#E3E3E3] rounded-xl overflow-hidden">
+              {/* Header */}
+              <div className="px-6 py-5 border-b border-[#E3E3E3] flex flex-wrap items-start justify-between gap-4">
                 <div>
-                  <div className="flex items-center gap-2 text-xs text-slate-500 font-mono tabular-nums">
-                    <span>{selectedQuotation.quoteNumber}</span>
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-neutral-500 font-mono tabular-nums">
+                    <span>{selected.quoteNumber}</span>
                     <span aria-hidden="true">·</span>
-                    <span className={`font-sans font-semibold ${statusTone(selectedQuotation.status)}`}>
-                      {selectedQuotation.status}
+                    <span className={`font-sans ${statusTone(selected.status)}`}>
+                      {selected.status}
                     </span>
                     <span aria-hidden="true">·</span>
-                    <span className="font-sans">
-                      {selectedQuotation.isApproved
-                        ? `Approved by ${selectedQuotation.approvedByName}`
-                        : 'Pending Finance Sign-off'}
-                    </span>
+                    <span className="font-sans text-neutral-600">{selected.targetDept}</span>
                   </div>
-                  <h2 className="text-lg font-semibold text-slate-900 mt-1">
-                    {selectedQuotation.companyName}
+                  <h2 className="text-lg font-semibold text-[#171717] mt-1">
+                    {selected.companyName}
                   </h2>
                   {linkedLead && (
-                    <p className="text-xs text-slate-500 mt-0.5">
-                      {linkedLead.contactPerson} · {linkedLead.entityType || 'Corporate Entity'}
-                      {linkedLead.annualTurnoverMyr
-                        ? ` · Turnover ${formatMyr(linkedLead.annualTurnoverMyr)}`
+                    <p className="text-xs text-neutral-500 mt-0.5">
+                      {linkedLead.contactPerson} ({linkedLead.entityType})
+                      {linkedLead.scope.annualTurnoverMyr > 0
+                        ? ` · Turnover ${formatMyr(linkedLead.scope.annualTurnoverMyr)}`
                         : ''}
-                      {linkedLead.headcount ? ` · ${linkedLead.headcount} staff` : ''}
+                      {linkedLead.scope.headcount > 0
+                        ? ` · ${linkedLead.scope.headcount} payroll staff`
+                        : ''}
                     </p>
                   )}
                 </div>
 
                 <button
                   type="button"
-                  onClick={handleDownloadPdf}
-                  className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  onClick={() => downloadQuotationPdf(previewQuotation, linkedLead)}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-neutral-700 bg-white border border-[#E3E3E3] rounded-lg hover:bg-[#FAFAFA] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                 >
                   <Download className="w-3.5 h-3.5" />
-                  {selectedQuotation.isApproved ? 'Download Official PDF' : 'Download Draft PDF'}
+                  {selected.isApproved ? 'Download Approved PDF' : 'Download Draft PDF'}
                 </button>
               </div>
 
               <div className="p-6 space-y-6">
                 {banner && (
-                  <div
-                    className={`p-3.5 text-xs rounded-lg border ${
-                      banner.type === 'error'
-                        ? 'bg-red-50 border-red-200 text-red-700'
-                        : 'bg-emerald-50 border-emerald-200 text-emerald-800'
-                    }`}
-                  >
-                    {banner.text}
+                  <div className="p-3 text-xs text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg">
+                    {banner}
                   </div>
                 )}
 
-                {selectedQuotation.rejectionFeedback && (
-                  <div className="p-4 bg-red-50 border border-red-200 rounded-lg space-y-1">
-                    <p className="text-xs font-semibold text-red-800">
-                      Finance Approver Amendment Request
-                    </p>
-                    <p className="text-xs text-red-700 leading-relaxed">
-                      {selectedQuotation.rejectionFeedback}
-                    </p>
-                  </div>
-                )}
-
-                {/* Financial Summary Strip */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 pb-5 border-b border-slate-200">
+                {/* Fee Subtotals Strip */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 pb-5 border-b border-[#E3E3E3]">
                   <div>
-                    <p className="text-xs text-slate-500">One-off Setup</p>
-                    <p className="text-base font-semibold text-slate-900 font-mono tabular-nums mt-0.5">
-                      {formatMyr(liveTotals.totalSetupMyr)}
+                    <p className="text-xs text-neutral-500">Setup Fee Total</p>
+                    <p className="text-base font-semibold text-[#171717] font-mono tabular-nums mt-0.5">
+                      {formatMyr(liveTotals.totalSetupFeeMyr)}
                     </p>
                   </div>
                   <div>
-                    <p className="text-xs text-slate-500">Monthly Retainer</p>
-                    <p className="text-base font-semibold text-slate-900 font-mono tabular-nums mt-0.5">
-                      {formatMyr(liveTotals.totalMonthlyMyr)}
+                    <p className="text-xs text-neutral-500">Monthly Recurring</p>
+                    <p className="text-base font-semibold text-[#171717] font-mono tabular-nums mt-0.5">
+                      {formatMyr(liveTotals.totalMonthlyRecurringMyr)}
                     </p>
                   </div>
                   <div>
-                    <p className="text-xs text-slate-500">Annual Statutory</p>
-                    <p className="text-base font-semibold text-slate-900 font-mono tabular-nums mt-0.5">
-                      {formatMyr(liveTotals.totalAnnualMyr)}
+                    <p className="text-xs text-neutral-500">Annual Recurring</p>
+                    <p className="text-base font-semibold text-[#171717] font-mono tabular-nums mt-0.5">
+                      {formatMyr(liveTotals.totalAnnualRecurringMyr)}
                     </p>
                   </div>
                   <div>
-                    <p className="text-xs text-slate-500">Est. Year-1 Total</p>
-                    <p className="text-base font-bold text-slate-900 font-mono tabular-nums mt-0.5">
-                      {formatMyr(liveTotals.totalContractValueMyr)}
+                    <p className="text-xs text-neutral-500">Est. Year-1 Total</p>
+                    <p className="text-base font-bold text-[#CB3737] font-mono tabular-nums mt-0.5">
+                      {formatMyr(liveTotals.totalYearOneMyr)}
                     </p>
                   </div>
                 </div>
 
-                {/* Line Items Table (Step 6) */}
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between gap-4">
-                    <h3 className="text-sm font-semibold text-slate-900">
-                      Itemized Fee Schedule (MYR)
-                    </h3>
-                    {isEditable && (
+                {/* Step 6 Interactive Line-Item Editor */}
+                <section className="space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <h3 className="text-sm font-semibold text-[#171717]">
+                        Step 6: Itemized MYR Fee Schedule
+                      </h3>
+                      <p className="text-[11px] text-neutral-500 mt-0.5">
+                        Baselines: Co Sec RM 60–120/mo · Inc RM 1.5k–2.5k · Acc RM 300–1.5k/mo ·
+                        Payroll RM 30–50/emp · Tax RM 1.2k–3.5k/yr · Audit RM 2.5k–8k+/yr
+                      </p>
+                    </div>
+                    {!isLockedFromEdit ? (
                       <button
                         type="button"
-                        onClick={handleAddLine}
-                        className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-700 hover:text-slate-900 cursor-pointer"
+                        onClick={addLineItem}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#CB3737] bg-[#CB3737]/5 hover:bg-[#CB3737]/10 rounded-md transition-colors whitespace-nowrap cursor-pointer"
                       >
                         <Plus className="w-3.5 h-3.5" />
                         Add Line Item
                       </button>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-xs text-neutral-500 font-medium">
+                        <Lock className="w-3.5 h-3.5" />
+                        Locked after dispatch
+                      </span>
                     )}
                   </div>
 
-                  {loadingItems ? (
-                    <div className="py-8 flex items-center justify-center text-xs text-slate-500 gap-2">
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      Loading line items...
-                    </div>
-                  ) : (
-                    <div className="overflow-x-auto border border-slate-200 rounded-lg">
-                      <table className="w-full text-left border-collapse">
-                        <thead>
-                          <tr className="bg-slate-50 border-b border-slate-200 text-xs font-medium text-slate-500">
-                            <th className="py-2.5 px-3">Category</th>
-                            <th className="py-2.5 px-3">Description &amp; Deliverables</th>
-                            <th className="py-2.5 px-3">Cycle</th>
-                            <th className="py-2.5 px-3 text-right">Qty</th>
-                            <th className="py-2.5 px-3 text-right">Unit (RM)</th>
-                            <th className="py-2.5 px-3 text-right">Total (RM)</th>
-                            {isEditable && <th className="py-2.5 px-2 w-8" />}
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100 text-xs">
-                          {lineItems.map((item, idx) => {
-                            const lineTotal =
-                              Math.max(1, Number(item.quantity) || 1) *
-                              (Number(item.unitPriceMyr) || 0);
-                            return (
-                              <tr key={item.id || `new_${idx}`} className="align-top">
-                                <td className="py-2.5 px-3 whitespace-nowrap">
-                                  {isEditable ? (
-                                    <select
-                                      value={item.serviceCategory}
-                                      onChange={(e) =>
-                                        handleUpdateLine(idx, {
-                                          serviceCategory: e.target.value as ServiceCategory,
-                                        })
-                                      }
-                                      className="px-2 py-1 text-xs border border-slate-200 rounded bg-white"
-                                    >
-                                      {SERVICE_CATEGORIES.map((c) => (
-                                        <option key={c} value={c}>
-                                          {c}
-                                        </option>
-                                      ))}
-                                    </select>
-                                  ) : (
-                                    <span className="font-medium text-slate-700">
-                                      {item.serviceCategory}
-                                    </span>
+                  <div className="overflow-x-auto border border-[#E3E3E3] rounded-lg">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="bg-[#FAFAFA] border-b border-[#E3E3E3] text-xs font-medium text-neutral-500">
+                          <th className="py-2.5 px-3">Dept</th>
+                          <th className="py-2.5 px-3">Service &amp; Deliverables</th>
+                          <th className="py-2.5 px-3">Cycle</th>
+                          <th className="py-2.5 px-3 text-right">Qty</th>
+                          <th className="py-2.5 px-3 text-right">Rate (RM)</th>
+                          <th className="py-2.5 px-3 text-right">Total (RM)</th>
+                          {!isLockedFromEdit && <th className="py-2.5 px-2 w-8" />}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#E3E3E3] text-xs">
+                        {lineItems.map((item, idx) => (
+                          <tr key={item.id} className="align-top">
+                            <td className="py-2.5 px-3 whitespace-nowrap">
+                              {!isLockedFromEdit ? (
+                                <select
+                                  value={item.dept}
+                                  onChange={(e) =>
+                                    updateItem(idx, { dept: e.target.value as Department })
+                                  }
+                                  className="px-2 py-1 text-xs border border-[#E3E3E3] rounded bg-white"
+                                >
+                                  {DEPARTMENTS.map((d) => (
+                                    <option key={d} value={d}>
+                                      {d}
+                                    </option>
+                                  ))}
+                                </select>
+                              ) : (
+                                <span className="font-medium text-neutral-700">{item.dept}</span>
+                              )}
+                            </td>
+                            <td className="py-2.5 px-3 min-w-[210px]">
+                              {!isLockedFromEdit ? (
+                                <div className="space-y-1.5">
+                                  <input
+                                    type="text"
+                                    value={item.description}
+                                    onChange={(e) =>
+                                      updateItem(idx, { description: e.target.value })
+                                    }
+                                    placeholder="Service line title"
+                                    className="w-full px-2 py-1 text-xs font-medium border border-[#E3E3E3] rounded"
+                                  />
+                                  <input
+                                    type="text"
+                                    value={item.deliverables}
+                                    onChange={(e) =>
+                                      updateItem(idx, { deliverables: e.target.value })
+                                    }
+                                    placeholder="Deliverables included"
+                                    className="w-full px-2 py-1 text-xs text-neutral-600 border border-[#E3E3E3] rounded"
+                                  />
+                                </div>
+                              ) : (
+                                <div>
+                                  <p className="font-medium text-[#171717]">{item.description}</p>
+                                  {item.deliverables && (
+                                    <p className="text-neutral-500 mt-0.5">{item.deliverables}</p>
                                   )}
-                                </td>
-                                <td className="py-2.5 px-3 min-w-[220px]">
-                                  {isEditable ? (
-                                    <div className="space-y-1.5">
-                                      <input
-                                        type="text"
-                                        value={item.description}
-                                        onChange={(e) =>
-                                          handleUpdateLine(idx, { description: e.target.value })
-                                        }
-                                        placeholder="Fee item description"
-                                        className="w-full px-2 py-1 text-xs font-medium border border-slate-200 rounded"
-                                      />
-                                      <input
-                                        type="text"
-                                        value={item.deliverables}
-                                        onChange={(e) =>
-                                          handleUpdateLine(idx, { deliverables: e.target.value })
-                                        }
-                                        placeholder="Deliverables included"
-                                        className="w-full px-2 py-1 text-xs text-slate-600 border border-slate-200 rounded"
-                                      />
-                                    </div>
-                                  ) : (
-                                    <div>
-                                      <p className="font-medium text-slate-900">{item.description}</p>
-                                      {item.deliverables && (
-                                        <p className="text-slate-500 mt-0.5">{item.deliverables}</p>
-                                      )}
-                                    </div>
-                                  )}
-                                </td>
-                                <td className="py-2.5 px-3 whitespace-nowrap">
-                                  {isEditable ? (
-                                    <select
-                                      value={item.frequency}
-                                      onChange={(e) =>
-                                        handleUpdateLine(idx, {
-                                          frequency: e.target.value as BillingFrequency,
-                                        })
-                                      }
-                                      className="px-2 py-1 text-xs border border-slate-200 rounded bg-white"
-                                    >
-                                      <option value="One-off">One-off</option>
-                                      <option value="Monthly">Monthly</option>
-                                      <option value="Annual">Annual</option>
-                                    </select>
-                                  ) : (
-                                    <span className="text-slate-600">{item.frequency}</span>
-                                  )}
-                                </td>
-                                <td className="py-2.5 px-3 text-right font-mono tabular-nums">
-                                  {isEditable ? (
-                                    <input
-                                      type="number"
-                                      min={1}
-                                      value={item.quantity}
-                                      onChange={(e) =>
-                                        handleUpdateLine(idx, {
-                                          quantity: Math.max(1, Number(e.target.value) || 1),
-                                        })
-                                      }
-                                      className="w-16 px-2 py-1 text-right text-xs border border-slate-200 rounded"
-                                    />
-                                  ) : (
-                                    item.quantity
-                                  )}
-                                </td>
-                                <td className="py-2.5 px-3 text-right font-mono tabular-nums">
-                                  {isEditable ? (
-                                    <input
-                                      type="number"
-                                      min={0}
-                                      step="10"
-                                      value={item.unitPriceMyr}
-                                      onChange={(e) =>
-                                        handleUpdateLine(idx, {
-                                          unitPriceMyr: Math.max(0, Number(e.target.value) || 0),
-                                        })
-                                      }
-                                      className="w-24 px-2 py-1 text-right text-xs border border-slate-200 rounded"
-                                    />
-                                  ) : (
-                                    item.unitPriceMyr.toLocaleString('en-MY', {
-                                      minimumFractionDigits: 2,
+                                </div>
+                              )}
+                            </td>
+                            <td className="py-2.5 px-3 whitespace-nowrap">
+                              {!isLockedFromEdit ? (
+                                <select
+                                  value={item.frequency}
+                                  onChange={(e) =>
+                                    updateItem(idx, {
+                                      frequency: e.target.value as BillingFrequency,
                                     })
-                                  )}
-                                </td>
-                                <td className="py-2.5 px-3 text-right font-mono font-semibold text-slate-900 tabular-nums whitespace-nowrap">
-                                  {lineTotal.toLocaleString('en-MY', { minimumFractionDigits: 2 })}
-                                </td>
-                                {isEditable && (
-                                  <td className="py-2.5 px-2 text-right">
-                                    <button
-                                      type="button"
-                                      onClick={() => handleRemoveLine(idx)}
-                                      className="p-1 text-slate-400 hover:text-red-600 cursor-pointer"
-                                      aria-label="Remove line item"
-                                    >
-                                      <Trash2 className="w-3.5 h-3.5" />
-                                    </button>
-                                  </td>
-                                )}
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
+                                  }
+                                  className="px-2 py-1 text-xs border border-[#E3E3E3] rounded bg-white"
+                                >
+                                  <option value="One-off">One-off</option>
+                                  <option value="Monthly">Monthly</option>
+                                  <option value="Annual">Annual</option>
+                                </select>
+                              ) : (
+                                <span className="text-neutral-600">{item.frequency}</span>
+                              )}
+                            </td>
+                            <td className="py-2.5 px-3 text-right font-mono tabular-nums">
+                              {!isLockedFromEdit ? (
+                                <input
+                                  type="number"
+                                  min={1}
+                                  value={item.quantity}
+                                  onChange={(e) =>
+                                    updateItem(idx, {
+                                      quantity: Math.max(1, Number(e.target.value) || 1),
+                                    })
+                                  }
+                                  className="w-16 px-2 py-1 text-right text-xs border border-[#E3E3E3] rounded"
+                                />
+                              ) : (
+                                item.quantity
+                              )}
+                            </td>
+                            <td className="py-2.5 px-3 text-right font-mono tabular-nums">
+                              {!isLockedFromEdit ? (
+                                <input
+                                  type="number"
+                                  min={0}
+                                  step="10"
+                                  value={item.unitPriceMyr}
+                                  onChange={(e) =>
+                                    updateItem(idx, {
+                                      unitPriceMyr: Math.max(0, Number(e.target.value) || 0),
+                                    })
+                                  }
+                                  className="w-24 px-2 py-1 text-right text-xs border border-[#E3E3E3] rounded"
+                                />
+                              ) : (
+                                item.unitPriceMyr.toLocaleString('en-MY', {
+                                  minimumFractionDigits: 2,
+                                })
+                              )}
+                            </td>
+                            <td className="py-2.5 px-3 text-right font-mono font-semibold text-[#171717] tabular-nums whitespace-nowrap">
+                              {item.lineTotalMyr.toLocaleString('en-MY', {
+                                minimumFractionDigits: 2,
+                              })}
+                            </td>
+                            {!isLockedFromEdit && (
+                              <td className="py-2.5 px-2 text-right">
+                                <button
+                                  type="button"
+                                  onClick={() => removeLineItem(idx)}
+                                  className="p-1 text-neutral-400 hover:text-[#CB3737] cursor-pointer"
+                                  aria-label="Remove line item"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </td>
+                            )}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Terms, Assumptions, Exclusions */}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-1">
+                    <div>
+                      <label className="block text-xs font-medium text-neutral-700 mb-1">
+                        Legal Remarks &amp; Terms
+                      </label>
+                      <textarea
+                        rows={2}
+                        disabled={isLockedFromEdit}
+                        value={legalRemarks}
+                        onChange={(e) => {
+                          setLegalRemarks(e.target.value);
+                          setHasUnsavedEdits(true);
+                        }}
+                        className="w-full px-2.5 py-1.5 text-xs border border-[#E3E3E3] rounded-lg disabled:bg-[#FAFAFA] disabled:text-neutral-500"
+                      />
                     </div>
-                  )}
-                </div>
-
-                {/* Scope Notes, Legal Remarks, Assumptions & Exclusions */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-xs font-medium text-slate-700 mb-1">
-                      PIC Discovery Scope Notes
-                    </label>
-                    <textarea
-                      rows={3}
-                      disabled={!isEditable}
-                      value={scopeNotes}
-                      onChange={(e) => setScopeNotes(e.target.value)}
-                      className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg disabled:bg-slate-50 disabled:text-slate-600"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-slate-700 mb-1">
-                      Legal Remarks &amp; Payment Terms
-                    </label>
-                    <textarea
-                      rows={3}
-                      disabled={!isEditable}
-                      value={legalRemarks}
-                      onChange={(e) => setLegalRemarks(e.target.value)}
-                      className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg disabled:bg-slate-50 disabled:text-slate-600"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-slate-700 mb-1">
-                      Key Scoping Assumptions
-                    </label>
-                    <textarea
-                      rows={2}
-                      disabled={!isEditable}
-                      value={assumptions}
-                      onChange={(e) => setAssumptions(e.target.value)}
-                      className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg disabled:bg-slate-50 disabled:text-slate-600"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-slate-700 mb-1">
-                      Out-of-Scope Exclusions
-                    </label>
-                    <textarea
-                      rows={2}
-                      disabled={!isEditable}
-                      value={exclusions}
-                      onChange={(e) => setExclusions(e.target.value)}
-                      className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg disabled:bg-slate-50 disabled:text-slate-600"
-                    />
-                  </div>
-                </div>
-
-                {/* PIC Draft Save & Submit Actions */}
-                {isEditable && (
-                  <div className="pt-2 flex flex-wrap items-center justify-end gap-3">
-                    <button
-                      type="button"
-                      onClick={() => handleSaveOrSubmit(false)}
-                      disabled={working}
-                      className="px-4 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors disabled:opacity-50 cursor-pointer"
-                    >
-                      Save Draft
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleSaveOrSubmit(true)}
-                      disabled={working}
-                      className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-slate-900 rounded-lg hover:bg-slate-800 transition-colors disabled:opacity-50 cursor-pointer"
-                    >
-                      {working && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                      Submit for Finance Approval
-                    </button>
-                  </div>
-                )}
-
-                <hr className="border-slate-200" />
-
-                {/* STEP 7: MANAGERIAL APPROVAL GATE */}
-                <section className="space-y-3">
-                  <div className="flex items-center justify-between gap-4">
-                    <h3 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
-                      <ShieldCheck className="w-4 h-4 text-slate-700" />
-                      Step 7: Finance Leadership Approval Gate
-                    </h3>
-                    <span
-                      className={`text-xs font-mono font-medium ${
-                        selectedQuotation.isApproved ? 'text-emerald-700' : 'text-amber-700'
-                      }`}
-                    >
-                      is_approved = {selectedQuotation.isApproved ? 'TRUE' : 'FALSE'}
-                    </span>
-                  </div>
-
-                  {selectedQuotation.isApproved ? (
-                    <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center justify-between gap-4 text-xs text-emerald-900">
-                      <div className="flex items-center gap-2.5">
-                        <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
-                        <span>
-                          Approved by <strong>{selectedQuotation.approvedByName}</strong> on{' '}
-                          <span className="font-mono tabular-nums">
-                            {formatDateTime(selectedQuotation.approvedAtIso)}
-                          </span>
-                          . Client dispatch is authorized.
-                        </span>
-                      </div>
+                    <div>
+                      <label className="block text-xs font-medium text-neutral-700 mb-1">
+                        Scoping Assumptions
+                      </label>
+                      <textarea
+                        rows={2}
+                        disabled={isLockedFromEdit}
+                        value={assumptions}
+                        onChange={(e) => {
+                          setAssumptions(e.target.value);
+                          setHasUnsavedEdits(true);
+                        }}
+                        className="w-full px-2.5 py-1.5 text-xs border border-[#E3E3E3] rounded-lg disabled:bg-[#FAFAFA] disabled:text-neutral-500"
+                      />
                     </div>
-                  ) : selectedQuotation.status === 'Pending Approval' ? (
-                    canApprove ? (
-                      <div className="p-4 bg-slate-50 border border-slate-200 rounded-lg space-y-4">
-                        <label className="flex items-start gap-3 text-xs text-slate-800 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={approvalChecked}
-                            onChange={(e) => setApprovalChecked(e.target.checked)}
-                            className="mt-0.5 w-4 h-4 rounded border-slate-300 text-slate-900 focus:ring-slate-900"
-                          />
-                          <span>
-                            <strong>Finance Approver Sign-off (`is_approved`):</strong> I have
-                            reviewed the client discovery scope, Malaysian advisory fee benchmarks,
-                            and engagement margin, and authorize client proposal dispatch.
-                          </span>
-                        </label>
+                    <div>
+                      <label className="block text-xs font-medium text-neutral-700 mb-1">
+                        Out-of-Scope Exclusions
+                      </label>
+                      <textarea
+                        rows={2}
+                        disabled={isLockedFromEdit}
+                        value={exclusions}
+                        onChange={(e) => {
+                          setExclusions(e.target.value);
+                          setHasUnsavedEdits(true);
+                        }}
+                        className="w-full px-2.5 py-1.5 text-xs border border-[#E3E3E3] rounded-lg disabled:bg-[#FAFAFA] disabled:text-neutral-500"
+                      />
+                    </div>
+                  </div>
 
-                        {showRejectBox && (
-                          <div className="space-y-2 pt-2 border-t border-slate-200">
-                            <label className="block text-xs font-medium text-slate-700">
-                              Revision Feedback for Department PIC
-                            </label>
-                            <textarea
-                              rows={2}
-                              value={rejectionFeedback}
-                              onChange={(e) => setRejectionFeedback(e.target.value)}
-                              placeholder="Specify required fee adjustments or scope clarifications..."
-                              className="w-full px-3 py-2 text-xs bg-white border border-slate-200 rounded-lg"
-                            />
-                          </div>
-                        )}
-
-                        <div className="flex flex-wrap items-center justify-between gap-3">
-                          {!showRejectBox ? (
-                            <button
-                              type="button"
-                              onClick={() => setShowRejectBox(true)}
-                              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-red-700 bg-white border border-red-200 rounded-lg hover:bg-red-50 transition-colors cursor-pointer"
-                            >
-                              <XCircle className="w-3.5 h-3.5" />
-                              Return for Revision
-                            </button>
-                          ) : (
-                            <div className="flex items-center gap-2">
-                              <button
-                                type="button"
-                                onClick={handleReject}
-                                disabled={working}
-                                className="px-3.5 py-2 text-xs font-semibold text-white bg-red-700 rounded-lg hover:bg-red-800 transition-colors cursor-pointer"
-                              >
-                                Confirm Rejection
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setShowRejectBox(false)}
-                                className="px-3 py-2 text-xs text-slate-600 hover:text-slate-900 cursor-pointer"
-                              >
-                                Cancel
-                              </button>
-                            </div>
-                          )}
-
-                          <button
-                            type="button"
-                            onClick={handleApprove}
-                            disabled={!approvalChecked || working}
-                            className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-emerald-700 rounded-lg hover:bg-emerald-800 transition-colors disabled:opacity-40 cursor-pointer"
-                          >
-                            {working && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                            Approve Quotation &amp; Unlock Dispatch
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-900">
-                        Awaiting Finance Director / Partner review. Department PICs cannot
-                        self-approve quotations.
-                      </div>
-                    )
-                  ) : (
-                    <p className="text-xs text-slate-500">
-                      Submit this draft quotation above to route it into the Finance Approval Queue.
-                    </p>
+                  {!isLockedFromEdit && hasUnsavedEdits && (
+                    <div className="flex justify-end pt-1">
+                      <button
+                        type="button"
+                        onClick={handleSaveEdits}
+                        className="px-4 py-2 text-xs font-semibold text-white bg-[#EE6F57] hover:bg-[#DC5E46] rounded-lg transition-colors cursor-pointer"
+                      >
+                        Save Line-Item Changes
+                      </button>
+                    </div>
                   )}
                 </section>
 
-                <hr className="border-slate-200" />
+                <hr className="border-[#E3E3E3]" />
 
-                {/* STEP 8: CLIENT PROPOSAL DISPATCH (HARD GUARDRAIL) */}
+                {/* STEP 7: APPROVAL QUEUE & ADMINISTRATOR CHECKBOX GATE */}
                 <section className="space-y-3">
-                  <div className="flex items-center justify-between gap-4">
-                    <h3 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
-                      {selectedQuotation.isApproved ? (
-                        <Send className="w-4 h-4 text-slate-700" />
-                      ) : (
-                        <Lock className="w-4 h-4 text-slate-400" />
-                      )}
-                      Step 8: Client Proposal Dispatch
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <h3 className="text-sm font-semibold text-[#171717] flex items-center gap-2">
+                      <ShieldCheck className="w-4 h-4 text-[#CB3737]" />
+                      Step 7: Quotation Approval Gate
                     </h3>
-                    {selectedQuotation.dispatchedAtIso && (
-                      <span className="text-xs text-emerald-700 font-mono tabular-nums">
-                        Sent via {selectedQuotation.dispatchChannel} ·{' '}
-                        {formatDateTime(selectedQuotation.dispatchedAtIso)}
+                    {!isAdministrator && (
+                      <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#CB3737]">
+                        <ShieldAlert className="w-3.5 h-3.5" />
+                        Requires Administrator Approval
                       </span>
                     )}
                   </div>
 
-                  {!selectedQuotation.isApproved ? (
-                    <div className="p-4 bg-slate-50 border border-slate-200 rounded-lg flex items-center gap-3 text-xs text-slate-600">
-                      <Lock className="w-4 h-4 text-slate-400 shrink-0" />
-                      <span>
-                        <strong>Dispatch Blocked (Hard Guardrail):</strong> Proposal delivery via
-                        Email or WhatsApp is locked by policy and database security rules until
-                        Finance Approval is confirmed (`is_approved == TRUE`).
-                      </span>
-                    </div>
-                  ) : (
-                    <div className="space-y-4">
-                      <div className="flex flex-wrap items-center gap-3">
-                        <button
-                          type="button"
-                          onClick={() => handleDispatch('Email')}
-                          disabled={working}
-                          className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-slate-900 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
-                        >
-                          <Mail className="w-3.5 h-3.5" />
-                          Dispatch via Email + PDF
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => handleDispatch('WhatsApp')}
-                          disabled={working}
-                          className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-emerald-900 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 transition-colors cursor-pointer"
-                        >
-                          <MessageSquare className="w-3.5 h-3.5" />
-                          {copiedWhatsApp
-                            ? 'Copied & Logged WhatsApp Dispatch'
-                            : 'Copy WhatsApp Proposal & Mark Sent'}
-                        </button>
-
-                        {whatsappPreview && (
-                          <a
-                            href={whatsappPreview.waUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors"
-                          >
-                            Open wa.me Link
-                            <ExternalLink className="w-3.5 h-3.5" />
-                          </a>
+                  <div
+                    className={`p-4 rounded-lg border ${
+                      selected.isApproved
+                        ? 'bg-emerald-50/70 border-emerald-200'
+                        : 'bg-[#FAFAFA] border-[#E3E3E3]'
+                    }`}
+                  >
+                    <label
+                      className={`flex items-start gap-3 text-xs ${
+                        isAdministrator && !isDispatched
+                          ? 'cursor-pointer text-[#171717]'
+                          : 'cursor-not-allowed text-neutral-500'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selected.isApproved}
+                        disabled={!isAdministrator || isDispatched}
+                        onChange={(e) => {
+                          if (!isAdministrator || isDispatched) return;
+                          if (hasUnsavedEdits) {
+                            onUpdateQuotationContent(selected.id, {
+                              lineItems,
+                              legalRemarks,
+                              assumptions,
+                              exclusions,
+                            });
+                            setHasUnsavedEdits(false);
+                          }
+                          onToggleApproval(selected.id, e.target.checked);
+                        }}
+                        className="mt-0.5 w-4 h-4 rounded border-[#E3E3E3] accent-[#CB3737] disabled:opacity-50"
+                      />
+                      <div className="space-y-1">
+                        <p className="font-semibold text-[#171717]">
+                          Quotation Approval (`is_approved = {selected.isApproved ? 'true' : 'false'}`)
+                        </p>
+                        {selected.isApproved ? (
+                          <p className="text-emerald-800 flex items-center gap-1.5">
+                            <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                            <span>
+                              Approved by <strong>{selected.approvedBy}</strong> at{' '}
+                              <span className="font-mono tabular-nums">
+                                {formatDateTime(selected.approvedAt)}
+                              </span>
+                              .
+                            </span>
+                          </p>
+                        ) : isAdministrator ? (
+                          <p className="text-neutral-600">
+                            Tick this box as Administrator to stamp `approved_by` and `approved_at`
+                            and unlock Step 8 client proposal dispatch.
+                          </p>
+                        ) : (
+                          <p className="text-[#CB3737] font-medium">
+                            Requires Administrator Approval — You are signed in as User. Switch to
+                            an Administrator session to authorize this quotation.
+                          </p>
                         )}
                       </div>
+                    </label>
+                  </div>
+                </section>
 
-                      {whatsappPreview && (
-                        <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg space-y-2">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="text-xs font-medium text-slate-600">
-                              Formatted Client Proposal Message Preview
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                if (navigator.clipboard) {
-                                  void navigator.clipboard.writeText(whatsappPreview.message);
-                                  setCopiedWhatsApp(true);
-                                  setTimeout(() => setCopiedWhatsApp(false), 2500);
-                                }
-                              }}
-                              className="inline-flex items-center gap-1 text-xs text-slate-600 hover:text-slate-900 cursor-pointer"
-                            >
-                              <Copy className="w-3.5 h-3.5" />
-                              Copy Text
-                            </button>
-                          </div>
-                          <pre className="text-xs text-slate-700 whitespace-pre-wrap font-sans leading-relaxed max-h-40 overflow-y-auto">
-                            {whatsappPreview.message}
-                          </pre>
-                        </div>
+                <hr className="border-[#E3E3E3]" />
+
+                {/* STEP 8: GATED DISPATCH */}
+                <section className="space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="text-sm font-semibold text-[#171717] flex items-center gap-2">
+                      {selected.isApproved ? (
+                        <Send className="w-4 h-4 text-[#CB3737]" />
+                      ) : (
+                        <Lock className="w-4 h-4 text-neutral-400" />
                       )}
+                      Step 8: Send Quotation to Lead (Gated Dispatch)
+                    </h3>
+                    {selected.dispatchedAt && (
+                      <span className="text-xs font-mono tabular-nums text-emerald-700 font-medium">
+                        Dispatched via {selected.dispatchChannel} ·{' '}
+                        {formatDateTime(selected.dispatchedAt)}
+                      </span>
+                    )}
+                  </div>
+
+                  {!selected.isApproved && (
+                    <div className="p-3.5 bg-[#FAFAFA] border border-[#E3E3E3] rounded-lg flex items-center gap-2.5 text-xs text-neutral-600">
+                      <Lock className="w-4 h-4 text-[#CB3737] shrink-0" />
+                      <span>
+                        <strong>Dispatch Locked:</strong> Sending to the client via Email or
+                        WhatsApp is strictly disabled until an Administrator ticks Quotation
+                        Approval above.
+                      </span>
+                    </div>
+                  )}
+
+                  <div className="flex flex-wrap items-center gap-3">
+                    <button
+                      type="button"
+                      disabled={!selected.isApproved}
+                      onClick={() => handleDispatch('Email')}
+                      className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-[#CB3737] hover:bg-[#B02D2D] rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                    >
+                      <Mail className="w-3.5 h-3.5" />
+                      Send Quotation via Email + PDF
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={!selected.isApproved}
+                      onClick={() => handleDispatch('WhatsApp')}
+                      className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-[#171717] bg-white border border-[#E3E3E3] hover:bg-[#FAFAFA] rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                    >
+                      <MessageSquare className="w-3.5 h-3.5 text-[#EE6F57]" />
+                      {copiedMsg
+                        ? 'Copied & Marked Dispatched'
+                        : 'Send Quotation via WhatsApp'}
+                    </button>
+
+                    {selected.isApproved && whatsappPreview && (
+                      <a
+                        href={whatsappPreview.waUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-neutral-700 bg-[#FAFAFA] border border-[#E3E3E3] rounded-lg hover:bg-neutral-100 transition-colors"
+                      >
+                        Open wa.me
+                        <ExternalLink className="w-3.5 h-3.5" />
+                      </a>
+                    )}
+                  </div>
+
+                  {selected.isApproved && whatsappPreview && (
+                    <div className="p-3.5 bg-[#FAFAFA] border border-[#E3E3E3] rounded-lg space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-medium text-neutral-600">
+                          Client Dispatch Message Preview
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (navigator.clipboard) {
+                              void navigator.clipboard.writeText(whatsappPreview.message);
+                              setCopiedMsg(true);
+                              setTimeout(() => setCopiedMsg(false), 2200);
+                            }
+                          }}
+                          className="inline-flex items-center gap-1 text-xs text-neutral-600 hover:text-[#171717] cursor-pointer"
+                        >
+                          <Copy className="w-3.5 h-3.5" />
+                          Copy
+                        </button>
+                      </div>
+                      <pre className="text-xs text-neutral-700 whitespace-pre-wrap font-sans leading-relaxed max-h-36 overflow-y-auto">
+                        {whatsappPreview.message}
+                      </pre>
                     </div>
                   )}
                 </section>

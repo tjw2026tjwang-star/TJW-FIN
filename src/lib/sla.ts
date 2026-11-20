@@ -1,59 +1,14 @@
-import type { Department, Lead, OrgConfig } from '../types';
+import type { Lead } from '../types';
 
-export const DEFAULT_MY_HOLIDAYS_2026: string[] = [
-  '2026-01-01', // New Year's Day
-  '2026-02-01', // Federal Territory Day & Thaipusam
-  '2026-02-02', // Federal Territory Day Observed
-  '2026-02-17', // Chinese New Year
-  '2026-02-18', // Chinese New Year Day 2
-  '2026-03-07', // Nuzul Al-Quran
-  '2026-03-20', // Hari Raya Aidilfitri
-  '2026-03-21', // Hari Raya Aidilfitri Day 2
-  '2026-05-01', // Labour Day
-  '2026-05-27', // Hari Raya Haji
-  '2026-05-31', // Wesak Day
-  '2026-06-01', // Agong's Birthday
-  '2026-06-16', // Awal Muharram
-  '2026-08-25', // Maulidur Rasul
-  '2026-08-31', // Merdeka Day
-  '2026-09-16', // Malaysia Day
-  '2026-11-08', // Deepavali
-  '2026-11-09', // Deepavali Observed
-  '2026-12-25', // Christmas Day
-];
-
-export function buildDefaultOrgConfig(currentUid: string, currentName: string): OrgConfig {
-  const safeName = currentName.trim() || 'Operations Lead';
-  return {
-    slaWorkingDays: 4,
-    publicHolidays: [...DEFAULT_MY_HOLIDAYS_2026],
-    departmentPics: {
-      CoSec: { uid: currentUid, name: `${safeName} (Co Sec)`, title: 'Company Secretary PIC' },
-      Accounting: { uid: currentUid, name: `${safeName} (Acc)`, title: 'Accounting Manager PIC' },
-      Audit: { uid: currentUid, name: `${safeName} (Audit)`, title: 'Audit Manager PIC' },
-      Tax: { uid: currentUid, name: `${safeName} (Tax)`, title: 'Tax Advisory PIC' },
-      Payroll: { uid: currentUid, name: `${safeName} (Payroll)`, title: 'Payroll Operations PIC' },
-    },
-    approverIds: [currentUid],
-    updatedBy: currentUid,
-  };
-}
-
-function toIsoDateKey(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
+export const SLA_WORKING_DAYS_LIMIT = 4;
 
 /**
- * Counts working days elapsed between receivedAtIso and referenceIso,
- * excluding weekends (Saturday & Sunday) and configured Malaysian public holidays.
+ * Counts working days elapsed between receivedAtIso and referenceIso (or now),
+ * excluding weekends (Saturday and Sunday).
  */
 export function calculateWorkingDaysElapsed(
   receivedAtIso: string,
-  referenceIso: string | null,
-  publicHolidays: string[]
+  referenceIso: string | null
 ): number {
   const start = new Date(receivedAtIso);
   const end = referenceIso ? new Date(referenceIso) : new Date();
@@ -67,16 +22,13 @@ export function calculateWorkingDaysElapsed(
     return 0;
   }
 
-  const holidaySet = new Set(publicHolidays);
   let workingDays = 0;
   const cursor = new Date(startDay);
   cursor.setDate(cursor.getDate() + 1);
 
   while (cursor <= endDay) {
     const dayOfWeek = cursor.getDay();
-    const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
-    const isHoliday = holidaySet.has(toIsoDateKey(cursor));
-    if (!isWeekend && !isHoliday) {
+    if (dayOfWeek !== 0 && dayOfWeek !== 6) {
       workingDays += 1;
     }
     cursor.setDate(cursor.getDate() + 1);
@@ -85,71 +37,55 @@ export function calculateWorkingDaysElapsed(
   return workingDays;
 }
 
-export interface LeadSlaEvaluation {
+export interface LeadSlaStatus {
   workingDaysElapsed: number;
-  thresholdDays: number;
+  limitDays: number;
   isBreached: boolean;
-  isApproaching: boolean;
-  effectiveStatus: 'Compliant' | 'Breached' | 'Pending' | 'Closed';
+  isFrozen: boolean;
   label: string;
 }
 
-export function evaluateLeadSla(
-  lead: Lead,
-  thresholdDays: number,
-  publicHolidays: string[]
-): LeadSlaEvaluation {
-  const referenceIso =
-    lead.contactStatus === 'Contacted' && lead.firstContactAtIso
-      ? lead.firstContactAtIso
-      : null;
-
+export function evaluateLeadSla(lead: Lead): LeadSlaStatus {
+  // Freeze SLA timer at firstContactAt once Contacted
+  const isFrozen = lead.contactStatus === 'Contacted' && Boolean(lead.firstContactAt);
   const workingDaysElapsed = calculateWorkingDaysElapsed(
-    lead.receivedAtIso,
-    referenceIso,
-    publicHolidays
+    lead.receivedAt,
+    isFrozen ? lead.firstContactAt : null
   );
 
-  if (lead.contactStatus === 'Unreachable / Disqualified') {
+  if (lead.contactStatus === 'Unreachable') {
     return {
       workingDaysElapsed,
-      thresholdDays,
+      limitDays: SLA_WORKING_DAYS_LIMIT,
       isBreached: false,
-      isApproaching: false,
-      effectiveStatus: 'Closed',
-      label: `Closed · ${workingDaysElapsed}d`,
+      isFrozen: true,
+      label: `Unreachable · ${workingDaysElapsed}d`,
     };
   }
 
   if (lead.contactStatus === 'Contacted') {
-    const breached = workingDaysElapsed > thresholdDays;
+    const breached = workingDaysElapsed > SLA_WORKING_DAYS_LIMIT;
     return {
       workingDaysElapsed,
-      thresholdDays,
+      limitDays: SLA_WORKING_DAYS_LIMIT,
       isBreached: breached,
-      isApproaching: false,
-      effectiveStatus: breached ? 'Breached' : 'Compliant',
+      isFrozen: true,
       label: breached
-        ? `Late Contact · ${workingDaysElapsed}d`
-        : `SLA Met · ${workingDaysElapsed}d`,
+        ? `Contacted Late · ${workingDaysElapsed}d`
+        : `SLA Met · ${workingDaysElapsed}d (Frozen)`,
     };
   }
 
-  // Pending Contact
-  const breached = workingDaysElapsed >= thresholdDays;
-  const approaching = !breached && workingDaysElapsed >= Math.max(1, thresholdDays - 1);
-
+  // Pending Contact: breach when working days elapsed >= 4
+  const isBreached = workingDaysElapsed >= SLA_WORKING_DAYS_LIMIT;
   return {
     workingDaysElapsed,
-    thresholdDays,
-    isBreached: breached,
-    isApproaching: approaching,
-    effectiveStatus: breached ? 'Breached' : 'Pending',
-    label: breached
-      ? `SLA Breached · ${workingDaysElapsed}d`
-      : approaching
-        ? `Due Soon · ${workingDaysElapsed}/${thresholdDays}d`
-        : `On Track · ${workingDaysElapsed}/${thresholdDays}d`,
+    limitDays: SLA_WORKING_DAYS_LIMIT,
+    isBreached,
+    isFrozen: false,
+    label: isBreached
+      ? `SLA BREACH / OVERDUE · ${workingDaysElapsed}d`
+      : `Pending · ${workingDaysElapsed}/${SLA_WORKING_DAYS_LIMIT} working days`,
   };
 }
 
@@ -188,59 +124,17 @@ export function formatDateTime(iso: string): string {
 export function generateSafeId(prefix: string): string {
   const rand = Math.random().toString(36).slice(2, 8);
   const ts = Date.now().toString(36);
-  return `${prefix}_${ts}_${rand}`.replace(/[^a-zA-Z0-9_-]/g, '');
+  return `${prefix}_${ts}_${rand}`;
 }
 
-export function generateLeadCode(): string {
+export function generateLeadCode(existingCount: number): string {
   const year = new Date().getFullYear();
-  const num = Math.floor(1000 + Math.random() * 9000);
-  return `LD-${year}-${num}`;
+  const seq = String(existingCount + 1).padStart(4, '0');
+  return `TJW-LD-${year}-${seq}`;
 }
 
-export function generateQuoteNumber(): string {
+export function generateQuoteNumber(existingCount: number): string {
   const year = new Date().getFullYear();
-  const num = Math.floor(1000 + Math.random() * 9000);
-  return `QT-${year}-${num}`;
-}
-
-export function computeQuotationTotals(
-  items: Array<{ frequency: string; quantity: number; unitPriceMyr: number }>
-) {
-  let totalSetupMyr = 0;
-  let totalMonthlyMyr = 0;
-  let totalAnnualMyr = 0;
-
-  for (const item of items) {
-    const lineTotal = Math.max(0, Number(item.quantity || 1) * Number(item.unitPriceMyr || 0));
-    if (item.frequency === 'One-off') {
-      totalSetupMyr += lineTotal;
-    } else if (item.frequency === 'Monthly') {
-      totalMonthlyMyr += lineTotal;
-    } else if (item.frequency === 'Annual') {
-      totalAnnualMyr += lineTotal;
-    }
-  }
-
-  const totalContractValueMyr = totalSetupMyr + totalMonthlyMyr * 12 + totalAnnualMyr;
-  return {
-    totalSetupMyr: Math.round(totalSetupMyr * 100) / 100,
-    totalMonthlyMyr: Math.round(totalMonthlyMyr * 100) / 100,
-    totalAnnualMyr: Math.round(totalAnnualMyr * 100) / 100,
-    totalContractValueMyr: Math.round(totalContractValueMyr * 100) / 100,
-  };
-}
-
-export function getDeptShortCode(dept: Department): string {
-  switch (dept) {
-    case 'CoSec':
-      return 'Co Sec';
-    case 'Accounting':
-      return 'Acc';
-    case 'Audit':
-      return 'Aud';
-    case 'Tax':
-      return 'Tax';
-    case 'Payroll':
-      return 'Pay';
-  }
+  const seq = String(existingCount + 1).padStart(4, '0');
+  return `TJW-QT-${year}-${seq}`;
 }

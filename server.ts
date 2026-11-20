@@ -25,29 +25,54 @@ function createGeminiClient() {
   });
 }
 
-const ROUTER_SYSTEM_PROMPT = `You are a corporate secretarial, tax, and accounting operations triage specialist for a Malaysian corporate advisory firm.
-Analyze incoming client emails and determine the required service departments:
-- CoSec: Incorporation (Sdn Bhd / LLP), AGM, Board Resolutions, SSM Filing, Share Allotment, Company Secretary Retainer.
-- Accounting: Bookkeeping, Monthly/Annual Financial Statements, SST-02, Management Accounts, Backlog Accounting.
-- Audit: Statutory Year-End Audit, Audit Exemption Review, Special Purpose Audit.
-- Tax: Corporate Form C, Tax Planning, CP204 Estimation, Form E, Personal Tax, Transfer Pricing.
-- Payroll: Monthly Salary, EPF/SOCSO/EIS, PCB, Form EA, HRDF.
+const ROUTER_SYSTEM_PROMPT = `You are the Lead Triage, SLA Routing, and Quotation Intelligence Assistant for T.J. Wang's Finance Department.
+Analyze incoming client emails across 5 primary Malaysian corporate service lines:
+- CoSec: New Sdn Bhd/LLP incorporation, annual compliance maintenance, AGM/board resolutions, share transfers, CTC docs.
+- Accounting: Monthly/quarterly bookkeeping, SST-02 return filing, financial statement compilation, management accounts.
+- Audit: Annual statutory financial audit, independent compliance review.
+- Tax: Corporate tax (Form C), CP204 tax estimates/revisions, employer returns (Form E), personal income tax (Form B/BE).
+- Payroll: Monthly payroll computation, payslips, EPF, SOCSO, EIS, PCB (MTD) statutory filings, and annual Form EA preparation.
 
 Extract client contact details accurately. If phone or company name is missing, infer conservatively from email signature/domain or return "Prospective Client" / empty string for phone.
+Flag that the assigned PIC must contact the lead within 4 working days.
 Always return structured JSON adhering strictly to the provided schema.`;
 
-const QUOTATION_SYSTEM_PROMPT = `You are an expert Finance Pricing Specialist for Malaysian Corporate Services.
-Using the PIC discovery scope notes, entity profile, and required service lines, generate transparent quotation line items in Malaysian Ringgit (MYR) adhering strictly to these standard Malaysian corporate advisory benchmarks:
+const QUOTATION_SYSTEM_PROMPT = `You are the Lead Triage, SLA Routing, and Quotation Intelligence Assistant for T.J. Wang's Finance Department.
+Using confirmed PIC discovery scope notes, entity profile, and required service lines, generate realistic, professional Malaysian SME quotation line items in Ringgit Malaysia (MYR):
 - Co Sec Retainer: RM 60 - RM 120 / month (billed Monthly).
 - Sdn Bhd Incorporation: RM 1,500 - RM 2,500 (One-off setup fee, including SSM statutory fees).
-- Monthly Bookkeeping: RM 300 - RM 1,500 / month based on monthly bank transaction volume and annual revenue tier (plus backlog catch-up One-off fee if accounting state indicates backlog).
-- Statutory Audit: Minimum RM 2,500+ baseline scaled by revenue and complexity (billed Annual).
-- Tax Submission (Form C / CP204): RM 1,200 - RM 3,500 / year (billed Annual).
-- Payroll Services: RM 30 - RM 50 / employee / month (set quantity = headcount, unitPriceMyr between 30 and 50, frequency = Monthly).
-- SST-02 Bi-Monthly Return Filing (if SST registered): RM 250 - RM 450 / filing or RM 150 - RM 250 / month.
+- Monthly Accounting: RM 300 - RM 1,500 / month based on monthly transaction volume, revenue tier, and SST status (plus backlog catch-up One-off fee if applicable).
+- Payroll Processing: RM 30 - RM 50 / employee / month (set quantity = headcount, unitPriceMyr between 30 and 50, frequency = Monthly).
+- Corporate Tax (Form C / CP204): RM 1,200 - RM 3,500 / year (billed Annual).
+- Statutory Audit: RM 2,500 - RM 8,000+ / year scaled by revenue and complexity (billed Annual).
 
-Provide clear, practical deliverables for each line item, plus concise Malaysian corporate legal remarks (validity 30 days, SST 8% service tax note where applicable, payment terms 50% deposit upon acceptance), realistic scoping assumptions, and explicit out-of-scope exclusions.
+Provide clear, practical deliverables for each line item, plus concise Malaysian corporate legal remarks (validity 30 days, SST 8% service tax note where applicable, payment terms 50% deposit upon acceptance, and notice that final proposal dispatch is subject to management review), realistic scoping assumptions, and explicit out-of-scope exclusions.
 Output exact JSON matching the schema.`;
+
+const UNIFIED_ASSISTANT_SYSTEM_PROMPT = `You are the Lead Triage, SLA Routing, and Quotation Intelligence Assistant for T.J. Wang's Finance Department.
+
+### OPERATIONAL CONTEXT & SERVICES
+You handle inbound client inquiries and quotation generation across 5 primary Malaysian corporate service lines:
+1. Company Secretarial (Co Sec): New Sdn Bhd/LLP incorporation, annual compliance maintenance, AGM/board resolutions, share transfers, CTC docs.
+2. Accounting & Bookkeeping (Accounting): Monthly/quarterly bookkeeping, SST-02 return filing, financial statement compilation, management accounts.
+3. Statutory Audit (Audit): Annual statutory financial audit, independent compliance review.
+4. Corporate & Personal Tax (Tax): Corporate tax (Form C), CP204 tax estimates/revisions, employer returns (Form E), personal income tax (Form B/BE).
+5. Payroll: Monthly payroll computation, payslips, EPF, SOCSO, EIS, PCB (MTD) statutory filings, and annual Form EA preparation.
+
+### WORKFLOW RESPONSIBILITIES
+- Automatically detect whether the user's input is an initial client inquiry/email/intake note ("LEAD_TRIAGE") or confirmed PIC scope/discovery notes requesting fee estimation ("QUOTATION_GENERATION").
+- For LEAD_TRIAGE: Extract lead_profile, determine primary_dept and secondary_depts, set sla_days_limit = 4, provide a concise 2-sentence routing_reason summarizing prospect background, core requirement, and the 4-working-day PIC outreach SLA, leave quotation.line_items empty with 0.00 totals, and draft a polite initial acknowledgement client_reply_draft.
+- For QUOTATION_GENERATION: Extract lead_profile and routing, generate realistic Malaysian SME quotation line items in MYR:
+  * Co Sec Retainer: RM 60 - RM 120 / month
+  * Sdn Bhd Incorporation: RM 1,500 - RM 2,500 (One-off)
+  * Monthly Accounting: RM 300 - RM 1,500 / month (tiered by volume/SST)
+  * Payroll Processing: RM 30 - RM 50 / employee / month (multiply by headcount for monthly rate_myr and note employee count in scope_summary)
+  * Corporate Tax (Form C): RM 1,200 - RM 3,500 / year
+  * Statutory Audit: RM 2,500 - RM 8,000+ / year
+  Compute exact fee subtotals: total_setup_fee_myr (sum of One-off items), total_monthly_recurring_myr (sum of Monthly items), and total_annual_recurring_myr (sum of Annually items).
+  Generate a formal client_reply_draft from T.J. Wang's Finance Department summarizing the proposed scope and explicitly confirming that final proposal dispatch is subject to management review.
+
+Always return strictly valid JSON matching the provided schema.`;
 
 async function withRetry<T>(fn: () => Promise<T>, maxAttempts = 2): Promise<T> {
   let lastError: unknown;
@@ -296,6 +321,139 @@ PIC Verified Discovery Scope Notes: ${scopeNotes || 'Standard annual statutory c
     }
   });
 
+  // Unified AI Intelligence Assistant (Auto-detects LEAD_TRIAGE vs QUOTATION_GENERATION)
+  app.post('/api/ai/assistant', async (req, res) => {
+    try {
+      const { input } = req.body as { input?: string };
+      if (!input || typeof input !== 'string' || input.trim().length < 10) {
+        res.status(400).json({
+          error: 'Please enter a client inquiry email, intake note, or confirmed PIC scope (at least 10 characters).',
+        });
+        return;
+      }
+
+      const ai = createGeminiClient();
+      const response = await withRetry(() =>
+        ai.models.generateContent({
+          model: 'gemini-4-hydrogen',
+          contents: input.slice(0, 9500),
+          config: {
+            systemInstruction: UNIFIED_ASSISTANT_SYSTEM_PROMPT,
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                mode: {
+                  type: Type.STRING,
+                  enum: ['LEAD_TRIAGE', 'QUOTATION_GENERATION'],
+                },
+                lead_profile: {
+                  type: Type.OBJECT,
+                  properties: {
+                    company_name: { type: Type.STRING },
+                    contact_person: { type: Type.STRING },
+                    contact_phone: { type: Type.STRING },
+                    contact_email: { type: Type.STRING },
+                    entity_type: {
+                      type: Type.STRING,
+                      enum: ['Sdn Bhd', 'Enterprise', 'LLP', 'Unknown'],
+                    },
+                  },
+                  required: [
+                    'company_name',
+                    'contact_person',
+                    'contact_phone',
+                    'contact_email',
+                    'entity_type',
+                  ],
+                },
+                routing: {
+                  type: Type.OBJECT,
+                  properties: {
+                    primary_dept: {
+                      type: Type.STRING,
+                      enum: ['Co Sec', 'Accounting', 'Audit', 'Tax', 'Payroll'],
+                    },
+                    secondary_depts: {
+                      type: Type.ARRAY,
+                      items: { type: Type.STRING },
+                    },
+                    sla_days_limit: { type: Type.INTEGER },
+                    routing_reason: { type: Type.STRING },
+                  },
+                  required: [
+                    'primary_dept',
+                    'secondary_depts',
+                    'sla_days_limit',
+                    'routing_reason',
+                  ],
+                },
+                quotation: {
+                  type: Type.OBJECT,
+                  properties: {
+                    line_items: {
+                      type: Type.ARRAY,
+                      items: {
+                        type: Type.OBJECT,
+                        properties: {
+                          dept: { type: Type.STRING },
+                          service_title: { type: Type.STRING },
+                          scope_summary: { type: Type.STRING },
+                          billing_cycle: {
+                            type: Type.STRING,
+                            enum: ['One-off', 'Monthly', 'Annually'],
+                          },
+                          rate_myr: { type: Type.NUMBER },
+                        },
+                        required: [
+                          'dept',
+                          'service_title',
+                          'scope_summary',
+                          'billing_cycle',
+                          'rate_myr',
+                        ],
+                      },
+                    },
+                    total_setup_fee_myr: { type: Type.NUMBER },
+                    total_monthly_recurring_myr: { type: Type.NUMBER },
+                    total_annual_recurring_myr: { type: Type.NUMBER },
+                  },
+                  required: [
+                    'line_items',
+                    'total_setup_fee_myr',
+                    'total_monthly_recurring_myr',
+                    'total_annual_recurring_myr',
+                  ],
+                },
+                client_reply_draft: { type: Type.STRING },
+              },
+              required: [
+                'mode',
+                'lead_profile',
+                'routing',
+                'quotation',
+                'client_reply_draft',
+              ],
+            },
+          },
+        })
+      );
+
+      const rawText = (response.text ?? '').trim();
+      if (!rawText) {
+        res.status(502).json({ error: 'AI Intelligence Assistant returned an empty response.' });
+        return;
+      }
+
+      const parsed = JSON.parse(rawText);
+      res.json({ result: parsed });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to process AI assistant request.';
+      console.error('[/api/ai/assistant] Error:', message);
+      res.status(500).json({ error: message });
+    }
+  });
+
   if (isProd) {
     const distPath = path.resolve(__dirname, 'dist');
     app.use(express.static(distPath));
@@ -312,7 +470,7 @@ PIC Verified Discovery Scope Notes: ${scopeNotes || 'Standard annual statutory c
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Meridian Advisory Ops server running on http://0.0.0.0:${PORT}`);
+    console.log(`T.J. Wang Finance Operations server running on http://0.0.0.0:${PORT}`);
   });
 }
 

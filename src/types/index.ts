@@ -1,19 +1,12 @@
-import type { Timestamp } from 'firebase/firestore';
+export type UserRole = 'Administrator' | 'User';
 
-export type UserRole = 'pic' | 'approver' | 'admin';
+export type Department = 'Co Sec' | 'Accounting' | 'Audit' | 'Tax' | 'Payroll';
 
-export type Department = 'CoSec' | 'Accounting' | 'Audit' | 'Tax' | 'Payroll';
-export type UserDepartment = Department | 'Management';
-export type ServiceCategory = Department | 'Advisory';
+export type EntityType = 'Sdn Bhd' | 'Enterprise' | 'LLP' | 'Sole Prop' | 'Bhd' | 'Other';
 
-export type EntityType =
-  | ''
-  | 'Sdn Bhd'
-  | 'Sole Prop'
-  | 'LLP'
-  | 'Partnership'
-  | 'Bhd'
-  | 'Labuan';
+export type ContactStatus = 'Pending Contact' | 'Contacted' | 'Unreachable';
+
+export type OutreachChannel = '' | 'Phone' | 'WhatsApp' | 'Email';
 
 export type AccountingState =
   | ''
@@ -22,14 +15,6 @@ export type AccountingState =
   | 'Backlog (>6 months)'
   | 'New Incorporation';
 
-export type ContactStatus =
-  | 'Pending Contact'
-  | 'Contacted'
-  | 'Unreachable / Disqualified';
-
-export type OutreachChannel = '' | 'Phone' | 'WhatsApp' | 'Email';
-export type SlaStatus = 'Pending' | 'Compliant' | 'Breached';
-
 export type WorkflowStage =
   | 'Triage'
   | 'Outreach'
@@ -37,62 +22,49 @@ export type WorkflowStage =
   | 'Quotation'
   | 'Approval'
   | 'Dispatched'
-  | 'Disqualified';
+  | 'Unreachable';
 
-export type QuotationStatus =
-  | 'Draft'
-  | 'Pending Approval'
-  | 'Approved'
-  | 'Rejected'
-  | 'Quotation Sent';
+export type QuotationStatus = 'Pending Approval' | 'Approved' | 'Dispatched';
 
 export type BillingFrequency = 'One-off' | 'Monthly' | 'Annual';
-export type DispatchChannel = '' | 'Email' | 'WhatsApp' | 'Manual';
+
+export type DispatchChannel = '' | 'Email' | 'WhatsApp';
 
 export type AuditAction =
-  | 'LEAD_INGESTED'
-  | 'OUTREACH_LOGGED'
-  | 'SLA_ESCALATED'
-  | 'SCOPE_RECORDED'
+  | 'SESSION_STARTED'
+  | 'LEAD_CREATED'
+  | 'OUTREACH_UPDATED'
+  | 'SLA_REMINDER_LOGGED'
+  | 'SCOPE_LOGGED'
   | 'QUOTATION_GENERATED'
-  | 'QUOTATION_SUBMITTED'
+  | 'QUOTATION_UPDATED'
   | 'QUOTATION_APPROVED'
-  | 'QUOTATION_REJECTED'
-  | 'QUOTATION_DISPATCHED'
-  | 'CONFIG_UPDATED';
+  | 'QUOTATION_APPROVAL_REVOKED'
+  | 'QUOTATION_DISPATCHED';
 
 export const DEPARTMENTS: Department[] = [
-  'CoSec',
+  'Co Sec',
   'Accounting',
   'Audit',
   'Tax',
   'Payroll',
 ];
 
-export const DEPARTMENT_LABELS: Record<Department, string> = {
-  CoSec: 'Company Secretarial',
-  Accounting: 'Accounting & SST',
+export const DEPARTMENT_FULL_NAMES: Record<Department, string> = {
+  'Co Sec': 'Company Secretarial',
+  Accounting: 'Accounting & Bookkeeping',
   Audit: 'Statutory Audit',
   Tax: 'Corporate & Personal Tax',
   Payroll: 'Payroll Processing',
 };
 
-export const SERVICE_CATEGORIES: ServiceCategory[] = [
-  'CoSec',
-  'Accounting',
-  'Audit',
-  'Tax',
-  'Payroll',
-  'Advisory',
-];
-
-export const ENTITY_TYPES: Exclude<EntityType, ''>[] = [
+export const ENTITY_TYPES: EntityType[] = [
   'Sdn Bhd',
-  'Sole Prop',
+  'Enterprise',
   'LLP',
-  'Partnership',
+  'Sole Prop',
   'Bhd',
-  'Labuan',
+  'Other',
 ];
 
 export const ACCOUNTING_STATES: Exclude<AccountingState, ''>[] = [
@@ -102,87 +74,72 @@ export const ACCOUNTING_STATES: Exclude<AccountingState, ''>[] = [
   'New Incorporation',
 ];
 
-export const LIMITS = {
-  leadCode: 30,
-  emailSubject: 240,
-  rawEmailBody: 10000,
-  companyName: 255,
-  contactPerson: 150,
-  contactEmail: 150,
-  contactPhone: 50,
-  inquirySummary: 2000,
-  assignedPicName: 120,
-  outreachNotes: 2000,
-  scopeNotes: 4000,
-  legalRemarks: 4000,
-  assumptions: 3000,
-  exclusions: 3000,
-  rejectionFeedback: 2000,
-  lineDescription: 1000,
-  lineDeliverables: 1000,
-  auditDetails: 2000,
-} as const;
+export const TURNOVER_TIERS = [
+  { id: 'under_500k', label: 'Below RM 500,000', numericValue: 350000 },
+  { id: '500k_2m', label: 'RM 500,000 – RM 2,000,000', numericValue: 1250000 },
+  { id: '2m_5m', label: 'RM 2,000,000 – RM 5,000,000', numericValue: 3500000 },
+  { id: '5m_15m', label: 'RM 5,000,000 – RM 15,000,000', numericValue: 9000000 },
+  { id: 'above_15m', label: 'Above RM 15,000,000', numericValue: 20000000 },
+] as const;
 
-export interface UserProfile {
-  uid: string;
-  email: string;
-  displayName: string;
-  role: UserRole;
-  department: UserDepartment;
-  createdAt?: Timestamp;
-  updatedAt?: Timestamp;
-}
+export type TurnoverTierId = (typeof TURNOVER_TIERS)[number]['id'];
 
-export interface DepartmentPicEntry {
-  uid: string;
+export interface UserSession {
   name: string;
-  title: string;
+  email: string;
+  department: Department;
+  role: UserRole;
+  signedInAt: string;
 }
 
-export interface OrgConfig {
-  slaWorkingDays: number;
-  publicHolidays: string[];
-  departmentPics: Record<Department, DepartmentPicEntry>;
-  approverIds: string[];
-  updatedBy: string;
-  updatedAt?: Timestamp;
+export interface LeadScope {
+  completed: boolean;
+  turnoverTier: TurnoverTierId | '';
+  annualTurnoverMyr: number;
+  monthlyTransactionVolume: number;
+  headcount: number;
+  sstRegistered: boolean;
+  requiresIncorporation: boolean;
+  accountingState: AccountingState;
+  requestedServices: Department[];
+  scopeNotes: string;
+  updatedAt: string;
 }
 
 export interface Lead {
   id: string;
   leadCode: string;
-  emailSubject: string;
-  rawEmailBody: string;
   companyName: string;
   contactPerson: string;
-  contactEmail: string;
   contactPhone: string;
-  inquirySummary: string;
-  serviceLines: Department[];
-  assignedDept: Department;
-  assignedPicId: string;
+  contactEmail: string;
+  entityType: EntityType;
+  inquiryNotes: string;
+  targetDept: Department;
+  secondaryDepts: Department[];
   assignedPicName: string;
-  createdBy: string;
-  approverIds: string[];
-  receivedAtIso: string;
-  contactStatus: ContactStatus;
-  firstContactAtIso: string;
+  receivedAt: string; // Step 2 assignment timestamp (ISO)
+  contactStatus: ContactStatus; // Step 3: Pending Contact | Contacted | Unreachable
+  firstContactAt: string; // Frozen SLA timestamp once Contacted
   outreachChannel: OutreachChannel;
   outreachNotes: string;
-  slaStatus: SlaStatus;
-  escalationSentAtIso: string;
-  escalationCount: number;
-  scopeCompleted: boolean;
-  entityType: EntityType;
-  annualTurnoverMyr: number;
-  monthlyBankTxCount: number;
-  headcount: number;
-  accountingState: AccountingState;
-  sstRegistered: boolean;
-  scopeNotes: string;
+  escalationRemindersSent: number;
+  lastReminderAt: string;
+  scope: LeadScope;
   workflowStage: WorkflowStage;
-  createdAt?: Timestamp;
-  updatedAt?: Timestamp;
+  createdByName: string;
+  updatedAt: string;
+}
+
+export interface QuotationLineItem {
+  id: string;
+  dept: Department;
+  description: string;
+  deliverables: string;
+  frequency: BillingFrequency;
+  quantity: number;
+  unitPriceMyr: number;
+  lineTotalMyr: number;
 }
 
 export interface Quotation {
@@ -190,85 +147,35 @@ export interface Quotation {
   quoteNumber: string;
   leadId: string;
   companyName: string;
-  assignedPicId: string;
-  createdBy: string;
-  approverIds: string[];
-  scopeNotes: string;
+  targetDept: Department;
+  lineItems: QuotationLineItem[];
+  totalSetupFeeMyr: number;
+  totalMonthlyRecurringMyr: number;
+  totalAnnualRecurringMyr: number;
+  totalYearOneMyr: number;
   legalRemarks: string;
   assumptions: string;
   exclusions: string;
-  totalSetupMyr: number;
-  totalMonthlyMyr: number;
-  totalAnnualMyr: number;
-  totalContractValueMyr: number;
   status: QuotationStatus;
   isApproved: boolean;
   approvedBy: string;
-  approvedByName: string;
-  approvedAtIso: string;
-  rejectionFeedback: string;
+  approvedAt: string;
   dispatchChannel: DispatchChannel;
-  dispatchedAtIso: string;
+  dispatchedAt: string;
   dispatchedBy: string;
-  createdAt?: Timestamp;
-  updatedAt?: Timestamp;
+  createdByName: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
-export interface QuotationLineItem {
+export interface AuditEntry {
   id: string;
-  quotationId: string;
-  serviceCategory: ServiceCategory;
-  description: string;
-  deliverables: string;
-  frequency: BillingFrequency;
-  quantity: number;
-  unitPriceMyr: number;
-  lineTotalMyr: number;
-  assignedPicId: string;
-  createdBy: string;
-  approverIds: string[];
-  createdAt?: Timestamp;
-  updatedAt?: Timestamp;
-}
-
-export interface AuditLog {
-  id: string;
-  entityType: 'Lead' | 'Quotation' | 'Config';
-  entityId: string;
-  entityLabel: string;
-  action: AuditAction;
-  actorUid: string;
+  timestamp: string;
   actorName: string;
-  actorRole: string;
+  actorEmail: string;
+  actorRole: UserRole;
+  department: Department;
+  action: AuditAction;
+  entityRef: string;
   details: string;
-  assignedPicId: string;
-  approverIds: string[];
-  createdAt?: Timestamp;
-}
-
-export interface AiTriageResult {
-  company_name: string;
-  contact_person: string;
-  contact_email: string;
-  contact_phone: string;
-  service_lines: Department[];
-  primary_department: Department;
-  inquiry_summary: string;
-  inferred_entity_type: EntityType;
-}
-
-export interface AiQuotationLineInput {
-  serviceCategory: ServiceCategory;
-  description: string;
-  deliverables: string;
-  frequency: BillingFrequency;
-  quantity: number;
-  unitPriceMyr: number;
-}
-
-export interface AiQuotationResult {
-  line_items: AiQuotationLineInput[];
-  legal_remarks: string;
-  assumptions: string;
-  exclusions: string;
 }
